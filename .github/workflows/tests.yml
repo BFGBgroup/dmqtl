@@ -1,0 +1,62 @@
+name: tests
+
+# This workflow runs only the pure Python tests:
+# core mathematical correctness, the Python-fallback end-to-end workflow,
+# and a CLI smoke test.
+#
+# DRIMSeq-related tests (tests/test_r_bridge_smoke.py) require an environment
+# with R and Bioconductor::DRIMSeq installed. They also include checks that
+# depend on verifying consistency between the reference-class conventions
+# used by the real R/DRIMSeq implementation and the Python implementation.
+# Such checks are more appropriate for manual verification in a real R
+# environment and are therefore not included as an unattended CI gate.
+# This is intentional and not an omission. See the comments at the top of
+# that test file and the README for details.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Core math correctness (tests/test_score_math.py)
+        run: python -m pytest tests/test_score_math.py -v
+
+      - name: Python-fallback end-to-end run on synthetic example
+        run: |
+          cd examples
+          python generate_synthetic_input.py
+          python run_synthetic_example.py
+
+      - name: CLI smoke test
+        run: |
+          cd examples
+          dmqtl-run \
+            --genotype genotype.txt \
+            --phenotype pas_counts.txt \
+            --pas-gene-map pas_to_gene.txt \
+            --covariates covariates.txt \
+            --snp-pos snp_pos.txt \
+            --gene-pos gene_pos.txt \
+            --output-prefix out_ci/apaqtl \
+            --use-drimseq no \
+            --n-workers 2

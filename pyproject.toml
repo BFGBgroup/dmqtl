@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dmqtl"
+version = "1.0.0"
+description = "Dirichlet-Multinomial GLM score test for composition/APA-QTL mapping (dmQTL)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Your Name", email = "you@example.edu" },
+]
+keywords = [
+    "QTL", "APA", "alternative polyadenylation", "Dirichlet-Multinomial",
+    "genomics", "eQTL", "splicing", "score test",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy>=1.23",
+    "scipy>=1.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/BFGBgroup/dmqtl"
+Repository = "https://github.com/BFGBgroup/dmqtl"
+Issues = "https://github.com/BFGBgroup/dmqtl/issues"
+Changelog = "https://github.com/BFGBgroup/dmqtl/blob/main/CHANGES.md"
+
+[project.scripts]
+dmqtl-run = "dmqtl.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dmqtl*"]
+
+[tool.setuptools.package-data]
+dmqtl = ["*.R"]
