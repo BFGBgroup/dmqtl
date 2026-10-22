@@ -155,6 +155,17 @@ to get wrong:
    `NullFit`) rather than trusting them silently — see
    `nullmodel.fit_null_drimseq_batch`.
 
+3. **Convert the genotype matrix once** with
+   `dmqtl-convert-genotype genotype.txt geno` and pass the printed prefix
+   to `dmqtl-run --genotype`. Genes then read only their cis columns on
+   demand; for 9.2 M variants × 436 individuals this keeps task building
+   under 10 GB, where the text reader needs well over 100 GB.
+4. Permutations use the fast engine by default (`--perm-engine fast`,
+   same results as `loop`, the v1.0.0 path); several DRIMSeq chunks can
+   run at once with `--null-fit-parallel-chunks`. See
+   [`CHANGES.md`](CHANGES.md) for what changed since v1.0.0 and how to
+   reproduce it.
+
 Before committing to a full-cohort run, benchmark on a small gene
 subset with the real per-gene SNP count and sample size to get an
 accurate per-gene throughput estimate — see
