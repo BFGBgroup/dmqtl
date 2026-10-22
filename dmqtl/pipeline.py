@@ -525,7 +525,9 @@ def run_many_genes(tasks: list[dict], null_fit_fn: NullFitFn | None = None,
     else:
         import multiprocessing as mp
         with mp.Pool(n_workers) as pool:
-            results = pool.map(_run_one_gene_worker, indexed)
+            # One gene per dispatch: per-gene cost spans orders of magnitude (K, SNP count, permutations
+            # used), and default chunks of ~n/(4*workers) genes leave most workers idle behind a heavy chunk.
+            results = pool.map(_run_one_gene_worker, indexed, chunksize=1)
     return [r for r in results if r is not None]
 
 
