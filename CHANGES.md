@@ -31,14 +31,23 @@ node, Xeon Gold 6348):
 | | v1.0.0 (`loop`, text genotype) | this branch (`fast`, store) |
 |---|---|---|
 | wall time | 3,981 s | 624 s |
-| peak RSS, main process | 12.5 GB | 2.4 GB |
-| peak RSS, per worker | 9.4 GB | 1.4 GB |
+| real memory of the whole run, peak | 15.4 GB | 6.7 GB (+ 2.1 GB mapped genotype file) |
+| private memory, main process | 11.8 GB | 0.5 GB |
+| private memory, largest worker | 1.1 GB | 1.0 GB |
 
 The three output files (`egenes`, `cis_qtl_pairs`, `significant_pairs`) are
 identical line by line (both sides with the two bug fixes below).
+Memory is the anonymous PSS summed over the main process and its workers
+(pages shared after fork counted once; `tools/mem_sampler.sh`, sampled every
+3 s, same inputs with 100 permutations). Per-process RSS and Slurm's MaxRSS
+count the shared pages again in every worker (127 GB and 15 GB here) and
+overstate both versions.
 Full cohort (9.2 M variants × 436 individuals, Ast, 13,126 genes): building
-all gene tasks peaks at 9.4 GB with the store; v1.0.0's text reader
-extrapolates to about 170–190 GB for reading the genotype alone.
+all gene tasks takes 7.5 GB of private memory in the main process (+ 2.9 GB
+of the mapped genotype file); workers forked afterwards hold at most 1.8 GB of
+private memory each (8 workers: 21.5 GB in total), i.e. they do not copy the
+main process's data. v1.0.0's text reader extrapolates to about 170–190 GB
+for reading the genotype alone.
 
 ### More genes with a usable null fit (DRIMSeq)
 
