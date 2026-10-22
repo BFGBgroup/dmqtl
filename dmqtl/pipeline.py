@@ -69,7 +69,7 @@ import numpy as np
 
 from .nullmodel import NullFit
 from .pvalue import adaptive_permutation, beta_approx_pvalue
-from .scoretest import GeneNullContext
+from .scoretest import GeneNullContext, PermScanner
 
 
 @dataclass
@@ -241,8 +241,17 @@ def run_one_gene(gene_id: str, celltype: str, y: np.ndarray, X: np.ndarray,
                   variant_ids: Sequence[str] | None = None,
                   perm_batch_size: int = 200, min_perm: int = 1000,
                   max_perm: int = 10000,
-                  min_hits_to_stop: int = 15) -> GeneResult | None:
+                  min_hits_to_stop: int = 15,
+                  perm_engine: str = "fast") -> GeneResult | None:
     """Process a single gene x cell type unit.
+
+    perm_engine:
+        "fast" (default): `scoretest.PermScanner`, the rearranged permutation
+        scan (same statistic up to rounding, see its docstring).
+        "loop": the v1.0.0 path, reorder G and call `score_pvalues` once per
+        permutation. Kept as the reference for equivalence tests.
+        Both draw permutations from `rng` in the same order, so with the same
+        seed they see identical permutations.
 
     y:
         `(n, K)` count matrix.
@@ -325,8 +334,14 @@ def run_one_gene(gene_id: str, celltype: str, y: np.ndarray, X: np.ndarray,
     lead_idx = int(np.argmin(obs_p))
     obs_min_p = float(obs_p[lead_idx])
 
+    if perm_engine not in ("fast", "loop"):
+        raise ValueError(f"perm_engine must be 'fast' or 'loop', received: {perm_engine!r}")
+    scanner = PermScanner(ctx, G) if perm_engine == "fast" else None
+
     def gen_batch(n_batch: int) -> np.ndarray:
         idx = np.array([rng.permutation(n) for _ in range(n_batch)])
+        if scanner is not None:
+            return scanner.min_pvalues(idx)
         min_p = np.empty(n_batch)
         for b in range(n_batch):
             Gp = G[idx[b], :]

@@ -272,6 +272,167 @@ def _t_to_pvalue(T: np.ndarray, df: int) -> np.ndarray:
     return p
 
 
+def dedup_columns(G: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Group genotype columns that are bitwise identical or exact negatives.
+
+    Inside LD blocks many cis-SNPs carry the same genotype vector. Their
+    score statistics are identical, and T is also invariant under g -> -g
+    (U and Idb change sign, Idd and the Schur correction do not), so each
+    distinct column only needs to be scanned once.
+
+    Returns
+    -------
+    uniq : column indices of G kept as representatives
+    col  : for every column of G, the position of its representative in `uniq`
+    sign : +1.0 or -1.0, such that ``G[:, uniq][:, col] * sign == G``
+    """
+    rows = np.ascontiguousarray(G.T) + 0.0  # + 0.0 turns -0.0 into 0.0 so equal vectors hash equally
+    seen: dict[bytes, int] = {}
+    uniq: list[int] = []
+    col = np.empty(rows.shape[0], dtype=np.intp)
+    sign = np.ones(rows.shape[0])
+    for j, r in enumerate(rows):
+        key = r.tobytes()
+        if key in seen:
+            col[j] = seen[key]
+            continue
+        neg = (-r + 0.0).tobytes()
+        if neg in seen:
+            col[j] = seen[neg]
+            sign[j] = -1.0
+            continue
+        seen[key] = len(uniq)
+        col[j] = len(uniq)
+        uniq.append(j)
+    return np.array(uniq, dtype=np.intp), col, sign
+
+
+# Fast path is used only when the Schur matrix is this well conditioned;
+# anything worse goes through np.linalg.pinv exactly as in score_test_batch.
+_FAST_COND_MAX = 1e6
+
+
+def _quad_form(U: np.ndarray, S: np.ndarray) -> np.ndarray:
+    """T = U^T pinv(S) U over leading batch dims; U (..., k), S (..., k, k).
+
+    Same value as the pinv expression in `score_test_batch` up to rounding:
+    for well-conditioned S, pinv(S) = inv(S), so closed-form inverses
+    (k = 1, 2) or a linear solve (k >= 3) are used. Singular or
+    ill-conditioned matrices fall back to np.linalg.pinv itself.
+    """
+    k = U.shape[-1]
+    T = np.empty(U.shape[:-1])
+    if k == 1:
+        s, u = S[..., 0, 0], U[..., 0]
+        good = np.isfinite(s) & (s != 0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            T[...] = np.where(good, u * u / s, 0.0)
+        bad = ~good
+    elif k == 2:
+        a, b, c, d = S[..., 0, 0], S[..., 0, 1], S[..., 1, 0], S[..., 1, 1]
+        u1, u2 = U[..., 0], U[..., 1]
+        det = a * d - b * c
+        # singular values of a general 2x2 matrix
+        fro = a * a + b * b + c * c + d * d
+        disc = np.sqrt(np.maximum(fro * fro - 4.0 * det * det, 0.0))
+        smax = np.sqrt(0.5 * (fro + disc))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            smin = np.abs(det) / smax
+            good = np.isfinite(fro) & (smax > 0) & (smin * _FAST_COND_MAX > smax)
+            T[...] = np.where(good, (u1 * (d * u1 - b * u2) + u2 * (a * u2 - c * u1)) / det, 0.0)
+        bad = ~good
+    else:
+        Ssym = 0.5 * (S + np.swapaxes(S, -1, -2))
+        finite = np.isfinite(Ssym).all(axis=(-1, -2))
+        ev = np.full(S.shape[:-1], np.nan)
+        ev[finite] = np.linalg.eigvalsh(Ssym[finite])
+        aev = np.abs(ev)
+        with np.errstate(invalid="ignore"):
+            good = finite & (aev.min(axis=-1) * _FAST_COND_MAX > aev.max(axis=-1))
+        T[...] = 0.0
+        if good.any():
+            x = np.linalg.solve(S[good], U[good][..., None])[..., 0]
+            T[good] = np.einsum("...i,...i->...", U[good], x)
+        bad = ~good
+    # np.linalg.pinv raises on non-finite input (v1.0.0 would stop there);
+    # here such entries become NaN and are later treated as invalid (p = 1).
+    fin = np.isfinite(S).all(axis=(-1, -2)) & np.isfinite(U).all(axis=-1)
+    T[bad & ~fin] = np.nan
+    bad = bad & fin
+    if bad.any():
+        Sb = np.linalg.pinv(S[bad])
+        T[bad] = np.einsum("...i,...ij,...j->...", U[bad], Sb, U[bad])
+    return T
+
+
+class PermScanner:
+    """Permutation scan for one gene, arithmetically rearranged for speed.
+
+    Same statistic as calling ``ctx.score_pvalues(G[perm])`` for every
+    permutation (the v1.0.0 loop), with four changes that do not alter the
+    result beyond floating-point rounding:
+
+    1. Rows of G are never reordered. A permutation of individuals is applied
+       to the much smaller R, W and X(x)W arrays instead (the identity used by
+       `score_test_batch_perm`), and G**2 is computed once per gene.
+    2. A block of permutations is stacked side by side so U, Idd and Idb come
+       out of three large matrix products instead of many small einsums.
+       `max_block_bytes` caps the block so memory stays bounded.
+    3. Duplicate / sign-flipped genotype columns are scanned once (see
+       `dedup_columns`); the minimum over SNPs is unchanged.
+    4. The (K-1)x(K-1) pseudo-inverse uses closed forms or a solve when the
+       matrix is well conditioned (`_quad_form`), and chi2.sf is evaluated
+       only at each permutation's largest valid statistic, which gives the
+       same minimum p-value because sf is monotone.
+    """
+
+    def __init__(self, ctx: GeneNullContext, G: np.ndarray, max_block_bytes: int = 256 * 2**20,
+                 dedup: bool = True):
+        self.ctx = ctx
+        n, km1, p = ctx.n, ctx.km1, ctx.p
+        if dedup:
+            G = G[:, dedup_columns(G)[0]]
+        self.G = np.ascontiguousarray(G)
+        self.G2 = self.G ** 2
+        self.Wf = ctx.W.reshape(n, km1 * km1)
+        # columns ordered (j, b, k) to match the "mjbk" layout of score_test_batch
+        self.XW = np.einsum("ib,ijk->ijbk", ctx.X, ctx.W).reshape(n, km1 * p * km1)
+        m = self.G.shape[1]
+        q = km1 * p * km1
+        per_perm = 8 * (m * (km1 + 3 * km1 * km1 + 2 * q) + n * (km1 + km1 * km1 + q))
+        self.block = max(1, int(max_block_bytes // max(per_perm, 1)))
+
+    def statistics(self, perm_indices: np.ndarray) -> np.ndarray:
+        """Score statistics, shape (n_perm, n_unique_snp)."""
+        ctx = self.ctx
+        n, km1, p = ctx.n, ctx.km1, ctx.p
+        m = self.G.shape[1]
+        out = np.empty((perm_indices.shape[0], m))
+        for s in range(0, perm_indices.shape[0], self.block):
+            inv = np.argsort(perm_indices[s:s + self.block], axis=1)
+            B = inv.shape[0]
+
+            def stacked(A):  # A[inv] laid out as (n, B * cols)
+                return np.transpose(A[inv], (1, 0, 2)).reshape(n, B * A.shape[1])
+
+            U = (self.G.T @ stacked(ctx.R)).reshape(m, B, km1)
+            Idd = (self.G2.T @ stacked(self.Wf)).reshape(m, B, km1, km1)
+            Idb = (self.G.T @ stacked(self.XW)).reshape(m, B, km1, p * km1)
+            Schur = Idd - (Idb @ ctx.Ibb_inv) @ np.swapaxes(Idb, -1, -2)
+            out[s:s + B] = _quad_form(U, Schur).T
+        return out
+
+    def min_pvalues(self, perm_indices: np.ndarray) -> np.ndarray:
+        """Minimum p-value over SNPs for each permutation, shape (n_perm,)."""
+        T = self.statistics(perm_indices)
+        bad = ~np.isfinite(T) | (T < 0)
+        Tmax = np.where(bad, -np.inf, T).max(axis=1)
+        p = np.ones(T.shape[0])
+        ok = np.isfinite(Tmax)
+        p[ok] = chi2.sf(Tmax[ok], df=self.ctx.km1)
+        return p
+
+
 def permute_min_p(ctx: GeneNullContext, G: np.ndarray, perm_indices: np.ndarray,
                    method: str = "loop") -> np.ndarray:
     """Compute the minimum score-test p-value for each permutation.
