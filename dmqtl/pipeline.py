@@ -435,9 +435,11 @@ def run_one_gene(gene_id: str, celltype: str, y: np.ndarray, X: np.ndarray,
                                      max_perm=max_perm,
                                      min_hits_to_stop=min_hits_to_stop)
     floor_share = float(np.mean(perm_res.perm_min_p <= 1e-12))
-    if floor_share > 0.01:
+    if floor_share > 0.01 and obs_min_p > 1e-12:
         # Under a well-calibrated null this share is ~0. Seen on real data (2026-10) together with a
-        # failing Beta fit: the score test is far from its chi-square null for this gene.
+        # failing Beta fit: the score test is far from its chi-square null for this gene. A gene with a
+        # strong true effect can also reach the floor under permutation (its null fit absorbs nothing of
+        # the effect), but then the observed min-p is below the floor as well, so it is not reported.
         print(f"[dmqtl] WARNING: gene {gene_id}: {floor_share:.0%} of permutation min-p values are <= 1e-12 "
               f"(observed min-p {obs_min_p:.3g}); its Beta-approximated p-value needs care", file=sys.stderr)
     p_beta, a, b = beta_approx_pvalue(perm_res)
