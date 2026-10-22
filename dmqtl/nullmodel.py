@@ -577,20 +577,37 @@ def fit_null_drimseq_batch(gene_ys: dict[str, np.ndarray], X: np.ndarray,
             if proc.stderr:
                 print(f"[fit_null_drimseq_batch] R stderr:\n{proc.stderr}", file=sys.stderr)
 
-        phi_by_gene: dict[str, tuple[float, bool]] = {}
-        with open(f"{out_prefix}_phi.csv", newline="") as f:
-            for row in csv.DictReader(f):
-                phi_raw = row["phi"]
-                phi_val = float(phi_raw) if phi_raw not in ("", "NA") else float("nan")
-                converged = row["converged"].strip().upper() in ("TRUE", "T", "1")
-                phi_by_gene[row["gene_id"]] = (phi_val, converged)
+        return _read_batch_outputs(out_prefix, gene_ids, gene_ys, X, sample_cols)
 
-        eta_blocks: dict[str, list[list[float]]] = {gid: [] for gid in gene_ids}
-        with open(f"{out_prefix}_eta.csv", newline="") as f:
-            for row in csv.DictReader(f):
-                gid = row["gene_id"]
-                vals = [float(row[c]) for c in sample_cols]
-                eta_blocks[gid].append(vals)
+
+def _csv_float(s: str) -> float:
+    """R's write.csv writes missing values as NA."""
+    s = s.strip()
+    return float("nan") if s in ("", "NA", "NaN") else float(s)
+
+
+def _read_batch_outputs(out_prefix, gene_ids, gene_ys, X, sample_cols) -> dict[str, NullFit]:
+    """Read <out_prefix>_phi.csv / _eta.csv written by r_null_fit_batch.R.
+
+    Genes whose fit is NA (genewise precision NA -> NA coefficients -> NA
+    eta) come back with phi = nan, NaN eta and converged=False, so
+    run_one_gene skips them. Earlier, float("NA") on such an eta row raised
+    ValueError and the whole chunk was lost (2026-10 fix).
+    """
+    n = X.shape[0]
+    phi_by_gene: dict[str, tuple[float, bool]] = {}
+    with open(f"{out_prefix}_phi.csv", newline="") as f:
+        for row in csv.DictReader(f):
+            phi_val = _csv_float(row["phi"])
+            converged = row["converged"].strip().upper() in ("TRUE", "T", "1")
+            phi_by_gene[row["gene_id"]] = (phi_val, converged)
+
+    eta_blocks: dict[str, list[list[float]]] = {gid: [] for gid in gene_ids}
+    with open(f"{out_prefix}_eta.csv", newline="") as f:
+        for row in csv.DictReader(f):
+            gid = row["gene_id"]
+            vals = [_csv_float(row[c]) for c in sample_cols]
+            eta_blocks[gid].append(vals)
 
     results: dict[str, NullFit] = {}
     for gid in gene_ids:
@@ -606,6 +623,8 @@ def fit_null_drimseq_batch(gene_ys: dict[str, np.ndarray], X: np.ndarray,
                 "do not silently pad with zeros."
             )
         eta = np.array(rows, dtype=float).T if rows else np.zeros((n, 0))
+        if not np.isfinite(eta).all():
+            converged = False  # never pass a non-finite linear predictor to the score test
         results[gid] = NullFit(beta=np.full((X.shape[1], max(K - 1, 0)), np.nan),
                                 phi=phi, eta=eta, loglik=float("nan"),
                                 n_categories=K, converged=converged, method="drimseq_batch")
