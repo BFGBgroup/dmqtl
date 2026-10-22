@@ -281,7 +281,14 @@ if (cr_logdet) {
     if (is.na(adj)) {
       logit_prop <- log(prop / prop[, q])
       par <- c(MASS::ginv(x) %*% logit_prop[, -q, drop = FALSE])
-      H <- optimHess(par = par, fn = dm_lik_regG, gr = dm_score_regG, x = x, prec = prec, y = y)
+      # optimHess() stops with "non-finite value supplied by optim" when the
+      # likelihood is not finite at the start values (seen on real Ast data);
+      # inside bplapply that error took down every gene of the call. Treat it
+      # like a singular Hessian: NA for this grid point.
+      H <- tryCatch(optimHess(par = par, fn = dm_lik_regG, gr = dm_score_regG, x = x, prec = prec, y = y),
+                    error = function(e) NULL)
+      if (is.null(H))
+        return(NA)
       adj <- half_logdet(n * (-H))
       if (is.na(adj))
         return(NA)

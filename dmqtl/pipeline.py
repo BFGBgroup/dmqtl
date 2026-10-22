@@ -61,6 +61,7 @@ job-array stage through `cache_dir`.
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
@@ -183,10 +184,11 @@ def fit_null_models_batched(tasks: list[dict], batch_null_fit_fn: BatchNullFitFn
         consistency check passed and a result was successfully obtained from
         a chunk.
 
-        If an entire chunk fails, an exception is raised rather than silently
-        skipping the affected genes. A null-model fitting failure requires
-        manual intervention and is fundamentally different from a structurally
-        untestable gene that can safely be skipped by `run_one_gene`.
+        If a chunk's R call fails, the chunk is refitted in halves until the
+        failing gene is isolated (2026-10): that gene is returned with
+        converged=False and method "r_error", a warning names it, and the cache
+        records the error. If no sub-chunk escapes the error (for example
+        Rscript or DRIMSeq is missing), the exception is raised.
     """
     if not tasks:
         return {}
@@ -224,17 +226,52 @@ def fit_null_models_batched(tasks: list[dict], batch_null_fit_fn: BatchNullFitFn
                 beta=np.full((X_ref.shape[1], 0), np.nan), phi=rec["phi"],
                 eta=np.array(rec["eta"]), loglik=float("nan"),
                 n_categories=rec["n_categories"], converged=rec["converged"],
-                method="drimseq_batch_cached")
+                method="r_error" if "error" in rec else "drimseq_batch_cached")
         return out
 
-    def fit_chunk(ci, chunk):
+    def failed_fit(task):
+        K = task["y"].shape[1]
+        return NullFit(beta=np.full((X_ref.shape[1], K - 1), np.nan), phi=float("nan"),
+                       eta=np.full((task["y"].shape[0], K - 1), np.nan), loglik=float("nan"),
+                       n_categories=K, converged=False, method="r_error")
+
+    def fit_isolating_errors(chunk):
+        # One gene can make the whole Rscript call fail (seen on real data: DRIMSeq's Cox-Reid fallback
+        # optimHess() stops with "non-finite value supplied by optim", and BiocParallel turns that into an
+        # error of the call). Refit the two halves until the failing gene is alone; it is marked
+        # converged=False (method "r_error") and every other gene keeps a fit. The halves estimate their
+        # own common precision, which only happens for chunks that could not be fitted at all.
+        # Returns (fits, errors); errors lists (gene_id, message) for the isolated genes.
         gene_ys = {t["gene_id"]: t["y"] for t in chunk}
-        chunk_fits = batch_null_fit_fn(gene_ys, X_ref)
+        try:
+            return batch_null_fit_fn(gene_ys, X_ref), []
+        except Exception as exc:  # noqa: BLE001 - re-raised below when no sub-chunk escapes it
+            if len(chunk) == 1:
+                return {chunk[0]["gene_id"]: failed_fit(chunk[0])}, [(chunk[0]["gene_id"], str(exc))]
+            print(f"[dmqtl] WARNING: null-model fit failed for {len(chunk)} genes "
+                  f"({str(exc).splitlines()[0][:200]}); refitting in two halves", file=sys.stderr)
+            half = len(chunk) // 2
+            fits, errors = {}, []
+            for part in (chunk[:half], chunk[half:]):
+                f, e = fit_isolating_errors(part)
+                fits.update(f)
+                errors += e
+            if len(errors) == len(chunk):
+                raise exc  # not a single-gene problem (Rscript missing, DRIMSeq not installed, ...)
+            return fits, errors
+
+    def fit_chunk(ci, chunk):
+        chunk_fits, errors = fit_isolating_errors(chunk)
+        for gid, msg in errors:
+            print(f"[dmqtl] WARNING: null-model fit failed for gene {gid}; marked converged=False "
+                  f"(R error: {msg.splitlines()[0][:200]})", file=sys.stderr)
+        error_of = dict(errors)
         cache_file = cache_file_of(ci)
         if cache_file is not None:
             serializable = {
                 gid: dict(phi=nf.phi, eta=nf.eta.tolist(),
-                          n_categories=nf.n_categories, converged=nf.converged)
+                          n_categories=nf.n_categories, converged=nf.converged,
+                          **({"error": error_of[gid][:2000]} if gid in error_of else {}))
                 for gid, nf in chunk_fits.items()
             }
             with open(cache_file, "w") as f:
@@ -397,6 +434,12 @@ def run_one_gene(gene_id: str, celltype: str, y: np.ndarray, X: np.ndarray,
                                      min_perm=min_perm,
                                      max_perm=max_perm,
                                      min_hits_to_stop=min_hits_to_stop)
+    floor_share = float(np.mean(perm_res.perm_min_p <= 1e-12))
+    if floor_share > 0.01:
+        # Under a well-calibrated null this share is ~0. Seen on real data (2026-10) together with a
+        # failing Beta fit: the score test is far from its chi-square null for this gene.
+        print(f"[dmqtl] WARNING: gene {gene_id}: {floor_share:.0%} of permutation min-p values are <= 1e-12 "
+              f"(observed min-p {obs_min_p:.3g}); its Beta-approximated p-value needs care", file=sys.stderr)
     p_beta, a, b = beta_approx_pvalue(perm_res)
 
     return GeneResult(gene_id=gene_id, celltype=celltype, n_snp=n_snp,
