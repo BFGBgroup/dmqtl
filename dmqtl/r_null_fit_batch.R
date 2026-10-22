@@ -93,13 +93,13 @@ suppressMessages({
 })
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) < 3 || length(args) > 10) {
+if (length(args) < 3 || length(args) > 11) {
   stop(
     paste0(
       "Usage: Rscript r_null_fit_batch.R ",
       "counts_long.csv covariates.csv out_prefix ",
       "[n_cores] [prec_subset] [prec_prior_df] ",
-      "[prec_moderation] [outlier_log2_threshold] [optim_maxit] [rng_seed]"
+      "[prec_moderation] [outlier_log2_threshold] [optim_maxit] [rng_seed] [cr_logdet]"
     )
   )
 }
@@ -156,6 +156,7 @@ outlier_log2_threshold <- if (length(args) >= 8 && nzchar(args[8])) as.numeric(a
 # Empty or 0 / empty keeps DRIMSeq's behaviour unchanged.
 optim_maxit <- if (length(args) >= 9 && nzchar(args[9])) as.integer(args[9]) else 0L
 rng_seed <- if (length(args) >= 10 && nzchar(args[10])) as.integer(args[10]) else NA_integer_
+cr_logdet <- if (length(args) >= 11 && nzchar(args[11])) as.integer(args[11]) == 1L else TRUE
 
 # ---- DRIMSeq workarounds (2026-10) -------------------------------------------
 #
@@ -230,6 +231,51 @@ if (optim_maxit > 0) {
                                                    parent = asNamespace("DRIMSeq"))
   assignInNamespace("dm_fitRegression", dm_fitRegression_maxit, ns = "DRIMSeq")
   message("[r_null_fit_batch] optim maxit = ", optim_maxit, " (DRIMSeq ", packageVersion("DRIMSeq"), ")")
+}
+
+# (4) det() overflow in the Cox-Reid adjustment -- the cause of NA precision
+#     seen with ~20 covariates. dm_CRadjustmentRegression() computes
+#     log(det(n * (-H))) / 2 for the p(K-1)-dimensional Hessian H. R's det()
+#     is sign * exp(log|det|); for p = 21 and K >= 4 (an 84 x 84 matrix scaled
+#     by n ~ 418) that exceeds the double range, det() returns Inf, and
+#     DRIMSeq turns the infinite adjustment into NA (then also tries a slow
+#     optimHess() fallback that overflows the same way). Taking
+#     determinant(., logarithm = TRUE)$modulus directly gives the same value
+#     up to rounding whenever det() did not overflow, and the same NA for a
+#     singular or indefinite matrix. On by default (cr_logdet = 1); 0 restores
+#     DRIMSeq's code. Besides rescuing the overflowing genes, this also changes
+#     the common precision: DRIMSeq sums the profile likelihood over genes with
+#     na.rm = TRUE, so at precisions where many genes overflowed the sum was
+#     taken over the few remaining genes, which pulled the common precision
+#     (the centre of every gene's grid) upwards.
+if (cr_logdet) {
+  dm_CRadjustmentRegression_logdet <- function(y, x, prec, prop) {
+    if (any(is.na(prop[1, ])))
+      return(NA)
+    prop <- t(prop)
+    n <- nrow(prop)
+    q <- ncol(prop)
+    half_logdet <- function(M) {
+      z <- determinant(M, logarithm = TRUE)
+      if (z$sign <= 0) return(if (is.finite(z$modulus)) NaN else -Inf)  # as log(det()) would
+      as.numeric(z$modulus) / 2
+    }
+    H <- dm_Hessian_regG_prop(y = t(y), prec = prec, prop = prop, x = x)
+    adj <- half_logdet(n * (-H))
+    if (is.na(adj)) {
+      logit_prop <- log(prop / prop[, q])
+      par <- c(MASS::ginv(x) %*% logit_prop[, -q, drop = FALSE])
+      H <- optimHess(par = par, fn = dm_lik_regG, gr = dm_score_regG, x = x, prec = prec, y = y)
+      adj <- half_logdet(n * (-H))
+      if (is.na(adj))
+        return(NA)
+    }
+    if (abs(adj) == Inf)
+      return(NA)
+    adj
+  }
+  environment(dm_CRadjustmentRegression_logdet) <- asNamespace("DRIMSeq")
+  assignInNamespace("dm_CRadjustmentRegression", dm_CRadjustmentRegression_logdet, ns = "DRIMSeq")
 }
 
 # (3) Reproducibility. With prec_subset < 1 (DRIMSeq's default is 0.1),

@@ -36,7 +36,7 @@ def test_maxit_and_seed_reach_rscript(monkeypatch):
     gy = {"A": np.ones((5, 2)), "B": np.ones((5, 2))}
     X = np.ones((5, 1))
     fits = nullmodel.fit_null_drimseq_batch(gy, X, ["Intercept"], optim_maxit=1000, rng_seed=7)
-    assert rec[0][-2:] == ["1000", "7"] and len(rec[0]) == 12
+    assert rec[0][-3:] == ["1000", "7", "1"] and len(rec[0]) == 13
     assert fits["A"].converged
-    nullmodel.fit_null_drimseq_batch(gy, X, ["Intercept"])
-    assert rec[1][-2:] == ["", ""]
+    nullmodel.fit_null_drimseq_batch(gy, X, ["Intercept"], cr_logdet=False)
+    assert rec[1][-3:] == ["", "", "0"]

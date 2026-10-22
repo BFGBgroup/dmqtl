@@ -83,6 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     drm.add_argument("--null-fit-optim-maxit", type=int, default=None,
                      help="Iteration limit for DRIMSeq's coefficient fit (R default 100); raising it rescues genes "
                           "whose precision is NA only because the fit stopped early")
+    drm.add_argument("--null-fit-cr-logdet", type=int, choices=[0, 1], default=1,
+                     help="1 (default): overflow-free log-determinant in DRIMSeq's Cox-Reid adjustment; "
+                          "0: DRIMSeq as shipped (v1.0.0 behaviour)")
     drm.add_argument("--null-fit-seed", type=int, default=None,
                      help="Seed for DRIMSeq's random gene subset when --null-fit-prec-subset < 1 (reproducible runs)")
 
@@ -127,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         null_fit_parallel_chunks=args.null_fit_parallel_chunks,
         null_fit_optim_maxit=args.null_fit_optim_maxit,
         null_fit_seed=args.null_fit_seed,
+        null_fit_cr_logdet=bool(args.null_fit_cr_logdet),
     )
     print(summary, file=sys.stderr)
     return 0

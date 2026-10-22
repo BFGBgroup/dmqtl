@@ -324,7 +324,8 @@ def fit_null_drimseq_batch(gene_ys: dict[str, np.ndarray], X: np.ndarray,
                             outlier_log2_threshold: float | None = None,
                             verbose: bool = False,
                             optim_maxit: int | None = None,
-                            rng_seed: int | None = None) -> dict[str, NullFit]:
+                            rng_seed: int | None = None,
+                            cr_logdet: bool = True) -> dict[str, NullFit]:
     """Batch version of `fit_null_drimseq`.
 
     This is the key function that allows DRIMSeq cross-gene precision
@@ -522,6 +523,11 @@ def fit_null_drimseq_batch(gene_ys: dict[str, np.ndarray], X: np.ndarray,
     precision when there are ~20 covariates). rng_seed fixes the random gene
     subset used for the common precision when prec_subset < 1. None keeps
     DRIMSeq's behaviour.
+
+    cr_logdet (2026-10, default True): compute the Cox-Reid adjustment's
+    log-determinant without det() overflow; with ~20 covariates and K >= 4
+    DRIMSeq's det() overflows and the gene's precision becomes NA. False
+    reproduces DRIMSeq exactly. See workaround (4) in r_null_fit_batch.R.
     """
     gene_ids = list(gene_ys.keys())
     n = X.shape[0]
@@ -573,7 +579,8 @@ def fit_null_drimseq_batch(gene_ys: dict[str, np.ndarray], X: np.ndarray,
                "" if outlier_log2_threshold is None else str(outlier_log2_threshold),
                # 2026-10: see the "DRIMSeq workarounds" block in r_null_fit_batch.R
                "" if not optim_maxit else str(int(optim_maxit)),
-               "" if rng_seed is None else str(int(rng_seed))]
+               "" if rng_seed is None else str(int(rng_seed)),
+               "1" if cr_logdet else "0"]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if proc.returncode != 0:
             raise RuntimeError(

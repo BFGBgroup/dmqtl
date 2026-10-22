@@ -248,7 +248,8 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
               n_workers: int = 1, seed: int = 0, celltype: str = "celltype",
               perm_engine: str = "fast", null_fit_parallel_chunks: int = 1,
               null_fit_optim_maxit: int | None = None,
-              null_fit_seed: int | None = None) -> RunSummary:
+              null_fit_seed: int | None = None,
+              null_fit_cr_logdet: bool = True) -> RunSummary:
     """Run the complete dmqtl workflow.
 
     Workflow:
@@ -438,6 +439,11 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
         See `nullmodel.fit_null_drimseq_batch` and the "DRIMSeq workarounds"
         block of r_null_fit_batch.R. None keeps DRIMSeq's behaviour.
 
+    null_fit_cr_logdet (2026-10, default True):
+        Overflow-free log-determinant in DRIMSeq's Cox-Reid adjustment; the
+        main cause of NA precision with ~20 covariates. False reproduces
+        v1.0.0 / DRIMSeq exactly.
+
     Example:
         from dmqtl.eqtl import run_dmqtl
 
@@ -515,7 +521,8 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
             n_cores=null_fit_n_cores, prec_subset=null_fit_prec_subset,
             prec_prior_df=null_fit_prec_prior_df,
             prec_moderation=null_fit_prec_moderation,
-            optim_maxit=null_fit_optim_maxit, rng_seed=null_fit_seed)
+            optim_maxit=null_fit_optim_maxit, rng_seed=null_fit_seed,
+            cr_logdet=null_fit_cr_logdet)
         t_null = time.time()
         null_fits = fit_null_models_batched(
             tasks, batch_fn, chunk_size=null_fit_chunk_size,
