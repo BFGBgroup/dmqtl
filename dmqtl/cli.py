@@ -80,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Permutation implementation; 'loop' is the v1.0.0 reference path (same results, slower)")
     drm.add_argument("--null-fit-parallel-chunks", type=int, default=1,
                      help="Null-fit chunks run at the same time (each is one Rscript using --null-fit-n-cores)")
+    drm.add_argument("--null-fit-optim-maxit", type=int, default=None,
+                     help="Iteration limit for DRIMSeq's coefficient fit (R default 100); raising it rescues genes "
+                          "whose precision is NA only because the fit stopped early")
+    drm.add_argument("--null-fit-seed", type=int, default=None,
+                     help="Seed for DRIMSeq's random gene subset when --null-fit-prec-subset < 1 (reproducible runs)")
 
     return p
 
@@ -120,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
         celltype=args.celltype,
         perm_engine=args.perm_engine,
         null_fit_parallel_chunks=args.null_fit_parallel_chunks,
+        null_fit_optim_maxit=args.null_fit_optim_maxit,
+        null_fit_seed=args.null_fit_seed,
     )
     print(summary, file=sys.stderr)
     return 0

@@ -322,7 +322,9 @@ def fit_null_drimseq_batch(gene_ys: dict[str, np.ndarray], X: np.ndarray,
                             prec_prior_df: float | None = None,
                             prec_moderation: str | None = None,
                             outlier_log2_threshold: float | None = None,
-                            verbose: bool = False) -> dict[str, NullFit]:
+                            verbose: bool = False,
+                            optim_maxit: int | None = None,
+                            rng_seed: int | None = None) -> dict[str, NullFit]:
     """Batch version of `fit_null_drimseq`.
 
     This is the key function that allows DRIMSeq cross-gene precision
@@ -513,6 +515,13 @@ def fit_null_drimseq_batch(gene_ys: dict[str, np.ndarray], X: np.ndarray,
     They are subsequently skipped by `pipeline.run_one_gene`, preventing a
     saturated boundary value from being silently treated as a valid
     precision estimate in the score test.
+
+    optim_maxit / rng_seed (2026-10), passed to r_null_fit_batch.R; see its
+    "DRIMSeq workarounds" block. optim_maxit raises the iteration limit of
+    DRIMSeq's coefficient fit (R's default 100 leaves many genes with NA
+    precision when there are ~20 covariates). rng_seed fixes the random gene
+    subset used for the common precision when prec_subset < 1. None keeps
+    DRIMSeq's behaviour.
     """
     gene_ids = list(gene_ys.keys())
     n = X.shape[0]
@@ -561,7 +570,10 @@ def fit_null_drimseq_batch(gene_ys: dict[str, np.ndarray], X: np.ndarray,
                "" if prec_subset is None else str(prec_subset),
                "" if prec_prior_df is None else str(prec_prior_df),
                "" if prec_moderation is None else str(prec_moderation),
-               "" if outlier_log2_threshold is None else str(outlier_log2_threshold)]
+               "" if outlier_log2_threshold is None else str(outlier_log2_threshold),
+               # 2026-10: see the "DRIMSeq workarounds" block in r_null_fit_batch.R
+               "" if not optim_maxit else str(int(optim_maxit)),
+               "" if rng_seed is None else str(int(rng_seed))]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if proc.returncode != 0:
             raise RuntimeError(

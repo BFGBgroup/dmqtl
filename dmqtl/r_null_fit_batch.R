@@ -93,13 +93,13 @@ suppressMessages({
 })
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) < 3 || length(args) > 8) {
+if (length(args) < 3 || length(args) > 10) {
   stop(
     paste0(
       "Usage: Rscript r_null_fit_batch.R ",
       "counts_long.csv covariates.csv out_prefix ",
       "[n_cores] [prec_subset] [prec_prior_df] ",
-      "[prec_moderation] [outlier_log2_threshold]"
+      "[prec_moderation] [outlier_log2_threshold] [optim_maxit] [rng_seed]"
     )
   )
 }
@@ -150,7 +150,93 @@ prec_moderation <- if (length(args) >= 7 && nzchar(args[7])) args[7] else NULL
 #
 # Default: 5, meaning that a precision estimate more than 2^5 = 32-fold
 # away from the batch median is considered unreliable.
-outlier_log2_threshold <- if (length(args) == 8 && nzchar(args[8])) as.numeric(args[8]) else 5
+outlier_log2_threshold <- if (length(args) >= 8 && nzchar(args[8])) as.numeric(args[8]) else 5
+
+# optim_maxit / rng_seed (2026-10): see the DRIMSeq workarounds just below.
+# Empty or 0 / empty keeps DRIMSeq's behaviour unchanged.
+optim_maxit <- if (length(args) >= 9 && nzchar(args[9])) as.integer(args[9]) else 0L
+rng_seed <- if (length(args) >= 10 && nzchar(args[10])) as.integer(args[10]) else NA_integer_
+
+# ---- DRIMSeq workarounds (2026-10) -------------------------------------------
+#
+# (1) Whole-chunk failure. dmDS_estimateTagwisePrecision() returns
+#     rep(NA, length(counts)) -- a *logical* vector -- when the profile
+#     likelihood is NA for every gene of the call. new("dmDSprecision") then
+#     stops with 'invalid object for slot "genewise_precision" ... got class
+#     "logical", should be or extend class "numeric"', and every gene of the
+#     chunk is lost. Coercing the result to double keeps those genes NA
+#     (converged = FALSE below) and lets the call finish. A chunk that did not
+#     hit this case is unaffected. Always on.
+local({
+  orig <- get("dmDS_estimateTagwisePrecision", envir = asNamespace("DRIMSeq"))
+  fixed <- function(...) {
+    r <- orig(...)
+    storage.mode(r) <- "double"
+    r
+  }
+  assignInNamespace("dmDS_estimateTagwisePrecision", fixed, ns = "DRIMSeq")
+})
+
+# (2) Why the profile likelihood is NA. dm_fitRegression() fits the
+#     coefficients with optim(method = "BFGS", reltol = 1e-12) and R's default
+#     maxit = 100. With ~20 covariates and K PAS there are 21 x (K - 1)
+#     coefficients, and many fits stop at the iteration limit; DRIMSeq then
+#     returns NA for that precision grid point, and a gene with any NA grid
+#     point gets genewise precision NA. optim_maxit > 0 replaces
+#     dm_fitRegression with a copy of the DRIMSeq 1.36.0 code whose only change
+#     is control$maxit. A fit that converged within 100 iterations takes the
+#     same path and returns the same value. Off by default because more genes
+#     then enter the common-precision sum, which moves the grid centre and so
+#     every gene's precision a little.
+if (optim_maxit > 0) {
+  dm_fitRegression_maxit <- function(y, design, prec, coef_mode = "optim", coef_tol = 1e-12) {
+    q <- nrow(y)
+    p <- ncol(design)
+    n <- ncol(y)
+    if (q < 2 || is.na(prec)) {
+      b <- matrix(NA, nrow = q, ncol = p)
+      prop <- matrix(NA, nrow = q, ncol = n)
+      rownames(prop) <- rownames(y)
+      rownames(b) <- rownames(y)
+      return(list(b = b, lik = NA, fit = prop))
+    }
+    yt <- t(y) + 1
+    prop <- yt / rowSums(yt)
+    logit_prop <- log(prop / prop[, q])
+    b_init <- c(MASS::ginv(design) %*% logit_prop[, -q, drop = FALSE])
+    if (coef_mode != "optim") stop("dmqtl optim_maxit patch supports coef_mode = 'optim' only")
+    co <- optim(par = b_init, fn = dm_lik_regG, gr = dm_score_regG,
+                x = design, prec = prec, y = y, method = "BFGS",
+                control = list(fnscale = -1, reltol = coef_tol, maxit = DMQTL_OPTIM_MAXIT))
+    if (co$convergence == 0) {
+      b <- rbind(t(matrix(co$par, p, q - 1)), rep(0, p))
+      lik <- co$value
+    } else {
+      b <- matrix(NA, nrow = q, ncol = p)
+      lik <- NA
+    }
+    if (!is.na(lik)) {
+      z <- exp(design %*% t(b[-q, , drop = FALSE]))
+      prop <- z / (1 + rowSums(z))
+      prop <- t(cbind(prop, 1 - rowSums(prop)))
+    } else {
+      prop <- matrix(NA, nrow = q, ncol = n)
+    }
+    rownames(prop) <- rownames(y)
+    rownames(b) <- rownames(y)
+    list(b = b, lik = lik, fit = prop)
+  }
+  environment(dm_fitRegression_maxit) <- list2env(list(DMQTL_OPTIM_MAXIT = optim_maxit),
+                                                   parent = asNamespace("DRIMSeq"))
+  assignInNamespace("dm_fitRegression", dm_fitRegression_maxit, ns = "DRIMSeq")
+  message("[r_null_fit_batch] optim maxit = ", optim_maxit, " (DRIMSeq ", packageVersion("DRIMSeq"), ")")
+}
+
+# (3) Reproducibility. With prec_subset < 1 (DRIMSeq's default is 0.1),
+#     dmPrecision sample()s the genes used for the common precision; the
+#     script never set a seed, so two runs on the same data could give
+#     different fits. rng_seed fixes the subset.
+if (!is.na(rng_seed)) set.seed(rng_seed)
 
 counts_df <- read.csv(counts_path, check.names = FALSE, colClasses = "character")
 covar_mat <- as.matrix(read.csv(covar_path, check.names = FALSE))

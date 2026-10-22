@@ -246,7 +246,9 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
               max_perm: int = 10000,
               min_hits_to_stop: int = 15, q_threshold: float = 0.05,
               n_workers: int = 1, seed: int = 0, celltype: str = "celltype",
-              perm_engine: str = "fast", null_fit_parallel_chunks: int = 1) -> RunSummary:
+              perm_engine: str = "fast", null_fit_parallel_chunks: int = 1,
+              null_fit_optim_maxit: int | None = None,
+              null_fit_seed: int | None = None) -> RunSummary:
     """Run the complete dmqtl workflow.
 
     Workflow:
@@ -432,6 +434,10 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
         How many null-fit chunks run at the same time; see
         `pipeline.fit_null_models_batched`. Results do not depend on it.
 
+    null_fit_optim_maxit / null_fit_seed (2026-10):
+        See `nullmodel.fit_null_drimseq_batch` and the "DRIMSeq workarounds"
+        block of r_null_fit_batch.R. None keeps DRIMSeq's behaviour.
+
     Example:
         from dmqtl.eqtl import run_dmqtl
 
@@ -508,7 +514,8 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
             rscript_bin=rscript_bin, timeout=null_fit_timeout,
             n_cores=null_fit_n_cores, prec_subset=null_fit_prec_subset,
             prec_prior_df=null_fit_prec_prior_df,
-            prec_moderation=null_fit_prec_moderation)
+            prec_moderation=null_fit_prec_moderation,
+            optim_maxit=null_fit_optim_maxit, rng_seed=null_fit_seed)
         t_null = time.time()
         null_fits = fit_null_models_batched(
             tasks, batch_fn, chunk_size=null_fit_chunk_size,
