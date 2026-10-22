@@ -157,6 +157,7 @@ class GeneNullContext:
         # eliminating the remaining per-SNP Python-level loop.
         Schur_inv = np.linalg.pinv(Schur)  # (n_snp, K-1, K-1)
         T = np.einsum("mi,mij,mj->m", U, Schur_inv, U, optimize=True)
+        T[_degenerate(Schur, Idd)] = np.nan  # untestable SNP -> p = 1
         return T, U
 
     def score_pvalues(self, G: np.ndarray) -> np.ndarray:
@@ -233,11 +234,36 @@ class GeneNullContext:
 
         Schur_inv = np.linalg.pinv(Schur)                     # Batched pseudoinverse supports arbitrary leading batch dimensions.
         T = np.einsum("bmi,bmij,bmj->bm", U, Schur_inv, U, optimize=True)
+        T[_degenerate(Schur, Idd)] = np.nan  # untestable SNP -> p = 1
         return T
 
     def score_pvalues_perm(self, G: np.ndarray, perm_indices: np.ndarray) -> np.ndarray:
         T = self.score_test_batch_perm(G, perm_indices)
         return _t_to_pvalue(T, self.km1)
+
+
+# A SNP is untestable when its Schur complement is this small relative to Idd.
+_DEGENERATE_REL = 1e-10
+
+
+def _degenerate(Schur: np.ndarray, Idd: np.ndarray) -> np.ndarray:
+    """True where ||Schur||_F <= _DEGENERATE_REL * ||Idd||_F (leading batch dims).
+
+    Individuals with zero total count for the gene have R_i = 0 and W_i = 0
+    exactly. A SNP whose genotype is constant over the remaining individuals
+    (more generally, lies in the span of the covariates there) has U = 0 and
+    Schur = 0 in exact arithmetic, so T = U' Schur^+ U is 0/0. In floating
+    point both are rounding noise and T is arbitrary: on real data (2026-10)
+    v1.0.0 returned such a T as p down to 1e-8 or as p = 0, and the loop and
+    fast engines produced different noise. Rare SNPs whose carriers all fall
+    among zero-count individuals hit this often under permutation.
+    Such a SNP carries no information about the gene, so its statistic is set
+    to NaN and `_t_to_pvalue` reports p = 1. Monomorphic columns (Idd = 0)
+    count as degenerate, as before (p = 1).
+    """
+    s = np.sqrt((Schur * Schur).sum(axis=(-1, -2)))
+    d = np.sqrt((Idd * Idd).sum(axis=(-1, -2)))
+    return s <= _DEGENERATE_REL * d
 
 
 def _t_to_pvalue(T: np.ndarray, df: int) -> np.ndarray:
@@ -433,7 +459,9 @@ class PermScanner:
             else:
                 Idb = (self.G.T @ stacked(self.XW)).reshape(m, B, km1, p * km1)
                 Schur = Idd - (Idb @ ctx.Ibb_inv) @ np.swapaxes(Idb, -1, -2)
-            out[s:s + B] = _quad_form(U, Schur).T
+            T = _quad_form(U, Schur)
+            T[_degenerate(Schur, Idd)] = np.nan  # untestable SNP, as in score_test_batch
+            out[s:s + B] = T.T
         return out
 
     def min_pvalues(self, perm_indices: np.ndarray) -> np.ndarray:
