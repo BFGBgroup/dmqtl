@@ -247,7 +247,7 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
               min_hits_to_stop: int = 15, q_threshold: float = 0.05,
               n_workers: int = 1, seed: int = 0, celltype: str = "celltype",
               perm_engine: str = "fast", null_fit_parallel_chunks: int = 1,
-              null_fit_optim_maxit: int | None = None,
+              null_fit_optim_maxit: int | None = 1000,
               null_fit_seed: int | None = None,
               null_fit_cr_logdet: bool = True) -> RunSummary:
     """Run the complete dmqtl workflow.
@@ -435,14 +435,16 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
         How many null-fit chunks run at the same time; see
         `pipeline.fit_null_models_batched`. Results do not depend on it.
 
-    null_fit_optim_maxit / null_fit_seed (2026-10):
+    null_fit_optim_maxit (2026-10, default 1000) / null_fit_seed:
         See `nullmodel.fit_null_drimseq_batch` and the "DRIMSeq workarounds"
-        block of r_null_fit_batch.R. None keeps DRIMSeq's behaviour.
+        block of r_null_fit_batch.R. optim_maxit None or 0 keeps R's 100;
+        seed None keeps DRIMSeq's unseeded gene subset.
 
     null_fit_cr_logdet (2026-10, default True):
         Overflow-free log-determinant in DRIMSeq's Cox-Reid adjustment; the
-        main cause of NA precision with ~20 covariates. False reproduces
-        v1.0.0 / DRIMSeq exactly.
+        main cause of NA precision with ~20 covariates.
+        `null_fit_cr_logdet=False, null_fit_optim_maxit=None` reproduces
+        v1.0.0 / DRIMSeq as shipped.
 
     Example:
         from dmqtl.eqtl import run_dmqtl

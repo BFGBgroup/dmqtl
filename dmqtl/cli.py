@@ -80,9 +80,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Permutation implementation; 'loop' is the v1.0.0 reference path (same results, slower)")
     drm.add_argument("--null-fit-parallel-chunks", type=int, default=1,
                      help="Null-fit chunks run at the same time (each is one Rscript using --null-fit-n-cores)")
-    drm.add_argument("--null-fit-optim-maxit", type=int, default=None,
-                     help="Iteration limit for DRIMSeq's coefficient fit (R default 100); raising it rescues genes "
-                          "whose precision is NA only because the fit stopped early")
+    drm.add_argument("--null-fit-optim-maxit", type=int, default=1000,
+                     help="Iteration limit for DRIMSeq's coefficient fit (default 1000; 0 = R's 100, as in v1.0.0); "
+                          "rescues genes whose precision is NA only because a fit stopped early")
     drm.add_argument("--null-fit-cr-logdet", type=int, choices=[0, 1], default=1,
                      help="1 (default): overflow-free log-determinant in DRIMSeq's Cox-Reid adjustment; "
                           "0: DRIMSeq as shipped (v1.0.0 behaviour)")

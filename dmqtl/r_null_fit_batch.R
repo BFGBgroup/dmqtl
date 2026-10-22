@@ -168,14 +168,28 @@ cr_logdet <- if (length(args) >= 11 && nzchar(args[11])) as.integer(args[11]) ==
 #     chunk is lost. Coercing the result to double keeps those genes NA
 #     (converged = FALSE below) and lets the call finish. A chunk that did not
 #     hit this case is unaffected. Always on.
+#     dmFit() has the same problem one step later: when every gene's fit is NA,
+#     dmDS_fit() / bbDS_fit() return an all-NA logical `lik`, and the
+#     dmDSfit slots lik_full / lik_full_bb fail the same check. Their `lik`
+#     is coerced the same way.
 local({
-  orig <- get("dmDS_estimateTagwisePrecision", envir = asNamespace("DRIMSeq"))
-  fixed <- function(...) {
-    r <- orig(...)
+  ns <- asNamespace("DRIMSeq")
+  orig_prec <- get("dmDS_estimateTagwisePrecision", envir = ns)
+  assignInNamespace("dmDS_estimateTagwisePrecision", function(...) {
+    r <- orig_prec(...)
     storage.mode(r) <- "double"
     r
+  }, ns = "DRIMSeq")
+  for (fname in c("dmDS_fit", "bbDS_fit")) {
+    local({
+      orig_fit <- get(fname, envir = ns)
+      assignInNamespace(fname, function(...) {
+        r <- orig_fit(...)
+        if (!is.null(r[["lik"]])) storage.mode(r[["lik"]]) <- "double"
+        r
+      }, ns = "DRIMSeq")
+    })
   }
-  assignInNamespace("dmDS_estimateTagwisePrecision", fixed, ns = "DRIMSeq")
 })
 
 # (2) Why the profile likelihood is NA. dm_fitRegression() fits the
@@ -186,9 +200,11 @@ local({
 #     point gets genewise precision NA. optim_maxit > 0 replaces
 #     dm_fitRegression with a copy of the DRIMSeq 1.36.0 code whose only change
 #     is control$maxit. A fit that converged within 100 iterations takes the
-#     same path and returns the same value. Off by default because more genes
-#     then enter the common-precision sum, which moves the grid centre and so
-#     every gene's precision a little.
+#     same path and returns the same value. Measured on 30 synthetic genes
+#     (418 samples, 21-column design): with workaround (4) alone 6 genes
+#     still had NA precision, with maxit = 1000 none. dmqtl passes 1000 by
+#     default; 0 / empty keeps R's 100. More genes then enter the
+#     common-precision sum, which moves the grid centre (see (4)).
 if (optim_maxit > 0) {
   dm_fitRegression_maxit <- function(y, design, prec, coef_mode = "optim", coef_tol = 1e-12) {
     q <- nrow(y)
