@@ -96,12 +96,14 @@ less of an issue than with the 10-gene chunks used in this test.
 
 ### New warning
 
-- A gene with more than 1% of permutation min-p values at the 1e-12 floor (and
-  an observed min-p above it) is reported: its Beta approximation is
-  unreliable. On real data this happens when a single outlying individual is
-  the only informative carrier of a rare SNP (e.g. 63% at the floor, Beta p
-  0.032 against an empirical p of 0.37). Not changed here; a MAC threshold or
-  the empirical p-value for such genes are options.
+- A gene with more than 1% of permutation min-p values at the 1e-12 floor is
+  reported on stderr with its Beta p and its empirical p: its Beta
+  approximation is unreliable. On real data this happens when a single
+  outlying individual is the only informative carrier of a rare SNP; 9 of 84
+  tested genes, e.g. ADAMTS18 with 63% at the floor, Beta p 0.032 and
+  empirical p 0.37 (its observed min-p, 2.1e-25, is below the floor too). The
+  p-values themselves are not changed here; a MAC threshold or the empirical
+  p-value for such genes are options.
 
 ### Reproducing v1.0.0
 
