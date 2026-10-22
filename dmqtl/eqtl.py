@@ -245,7 +245,8 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
               perm_batch_size: int = 200, min_perm: int = 1000,
               max_perm: int = 10000,
               min_hits_to_stop: int = 15, q_threshold: float = 0.05,
-              n_workers: int = 1, seed: int = 0, celltype: str = "celltype") -> RunSummary:
+              n_workers: int = 1, seed: int = 0, celltype: str = "celltype",
+              perm_engine: str = "fast", null_fit_parallel_chunks: int = 1) -> RunSummary:
     """Run the complete dmqtl workflow.
 
     Workflow:
@@ -423,6 +424,14 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
         Do not assume that the behavior described here necessarily applies
         identically to every DRIMSeq version or dataset without verification.
 
+    perm_engine (2026-10):
+        "fast" (default) or "loop"; see `pipeline.run_one_gene`. "loop" is
+        the v1.0.0 permutation path, kept as the reference.
+
+    null_fit_parallel_chunks (2026-10):
+        How many null-fit chunks run at the same time; see
+        `pipeline.fit_null_models_batched`. Results do not depend on it.
+
     Example:
         from dmqtl.eqtl import run_dmqtl
 
@@ -503,7 +512,7 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
         t_null = time.time()
         null_fits = fit_null_models_batched(
             tasks, batch_fn, chunk_size=null_fit_chunk_size,
-            cache_dir=null_fit_cache_dir)
+            cache_dir=null_fit_cache_dir, parallel_chunks=null_fit_parallel_chunks)
         n_not_converged = sum(
             1 for t in tasks
             if t["gene_id"] not in null_fits or not null_fits[t["gene_id"]].converged
@@ -514,13 +523,13 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
         gene_results = run_many_genes(
             tasks, null_fits=null_fits, n_workers=n_workers, seed=seed,
             perm_batch_size=perm_batch_size, min_perm=min_perm, max_perm=max_perm,
-            min_hits_to_stop=min_hits_to_stop,
+            min_hits_to_stop=min_hits_to_stop, perm_engine=perm_engine,
         )
     else:
         gene_results = run_many_genes(
             tasks, null_fit_fn=null_fit_fn, n_workers=n_workers, seed=seed,
             perm_batch_size=perm_batch_size, min_perm=min_perm, max_perm=max_perm,
-            min_hits_to_stop=min_hits_to_stop,
+            min_hits_to_stop=min_hits_to_stop, perm_engine=perm_engine,
         )
 
     if gene_results:

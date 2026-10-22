@@ -106,7 +106,8 @@ BatchNullFitFn = Callable[[dict, np.ndarray], dict]
 
 def fit_null_models_batched(tasks: list[dict], batch_null_fit_fn: BatchNullFitFn,
                              chunk_size: int | None = None,
-                             cache_dir: str | None = None) -> dict[str, NullFit]:
+                             cache_dir: str | None = None,
+                             parallel_chunks: int = 1) -> dict[str, NullFit]:
     """Fit null models for multiple genes as an independent step before
     score testing, rather than calling `null_fit_fn(y, X)` separately inside
     each `run_one_gene` worker.
@@ -172,6 +173,11 @@ def fit_null_models_batched(tasks: list[dict], batch_null_fit_fn: BatchNullFitFn
         must be cleared manually. Automatic cache invalidation is not
         implemented here.
 
+    parallel_chunks: Number of chunks fitted at the same time (2026-10).
+        Each chunk is a separate Rscript process, so total R cores are
+        `parallel_chunks x null_fit_n_cores`. Chunk composition is unchanged,
+        so every chunk's result is the same as in a sequential run.
+
     Returns:
         A `{gene_id: NullFit}` dictionary containing genes for which the X
         consistency check passed and a result was successfully obtained from
@@ -202,27 +208,29 @@ def fit_null_models_batched(tasks: list[dict], batch_null_fit_fn: BatchNullFitFn
     if cache_path is not None:
         cache_path.mkdir(parents=True, exist_ok=True)
 
-    results: dict[str, NullFit] = {}
-    for ci, chunk in enumerate(chunks):
-        gene_ids_in_chunk = [t["gene_id"] for t in chunk]
-        cache_file = (cache_path / f"chunk_{ci:05d}.json") if cache_path is not None else None
+    def cache_file_of(ci):
+        return (cache_path / f"chunk_{ci:05d}.json") if cache_path is not None else None
 
-        if cache_file is not None and cache_file.exists():
-            with open(cache_file) as f:
-                cached = json.load(f)
-            for gid in gene_ids_in_chunk:
-                rec = cached[gid]
-                results[gid] = NullFit(
-                    beta=np.full((X_ref.shape[1], 0), np.nan), phi=rec["phi"],
-                    eta=np.array(rec["eta"]), loglik=float("nan"),
-                    n_categories=rec["n_categories"], converged=rec["converged"],
-                    method="drimseq_batch_cached")
-            continue
+    def load_cached(ci, chunk):
+        cache_file = cache_file_of(ci)
+        if cache_file is None or not cache_file.exists():
+            return None
+        with open(cache_file) as f:
+            cached = json.load(f)
+        out = {}
+        for gid in (t["gene_id"] for t in chunk):
+            rec = cached[gid]
+            out[gid] = NullFit(
+                beta=np.full((X_ref.shape[1], 0), np.nan), phi=rec["phi"],
+                eta=np.array(rec["eta"]), loglik=float("nan"),
+                n_categories=rec["n_categories"], converged=rec["converged"],
+                method="drimseq_batch_cached")
+        return out
 
+    def fit_chunk(ci, chunk):
         gene_ys = {t["gene_id"]: t["y"] for t in chunk}
         chunk_fits = batch_null_fit_fn(gene_ys, X_ref)
-        results.update(chunk_fits)
-
+        cache_file = cache_file_of(ci)
         if cache_file is not None:
             serializable = {
                 gid: dict(phi=nf.phi, eta=nf.eta.tolist(),
@@ -231,7 +239,42 @@ def fit_null_models_batched(tasks: list[dict], batch_null_fit_fn: BatchNullFitFn
             }
             with open(cache_file, "w") as f:
                 json.dump(serializable, f)
+        return chunk_fits
 
+    per_chunk: dict[int, dict] = {}
+    todo = []
+    for ci, chunk in enumerate(chunks):
+        cached = load_cached(ci, chunk)
+        if cached is None:
+            todo.append((ci, chunk))
+        else:
+            per_chunk[ci] = cached
+
+    if parallel_chunks <= 1 or len(todo) <= 1:
+        for ci, chunk in todo:
+            per_chunk[ci] = fit_chunk(ci, chunk)
+    else:
+        # Each chunk is an independent Rscript call (its own dmPrecision /
+        # dmFit), so running several at once gives the same per-chunk results
+        # as running them one after another. Threads are enough: the work is
+        # done in the R subprocesses. A failed chunk is re-raised after the
+        # others finish, so their caches are written for the next resume.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=parallel_chunks) as pool:
+            futures = [(ci, pool.submit(fit_chunk, ci, chunk)) for ci, chunk in todo]
+            errors = []
+            for ci, fut in futures:
+                try:
+                    per_chunk[ci] = fut.result()
+                except Exception as exc:  # noqa: BLE001 - re-raised below
+                    errors.append((ci, exc))
+        if errors:
+            ci, exc = errors[0]
+            raise RuntimeError(f"null-model chunk {ci} failed ({len(errors)} chunk(s) failed in total)") from exc
+
+    results: dict[str, NullFit] = {}
+    for ci in range(len(chunks)):
+        results.update(per_chunk[ci])
     return results
 
 

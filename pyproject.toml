@@ -45,6 +45,7 @@ Changelog = "https://github.com/BFGBgroup/dmqtl/blob/main/CHANGES.md"
 
 [project.scripts]
 dmqtl-run = "dmqtl.cli:main"
+dmqtl-convert-genotype = "dmqtl.cli:convert_main"
 
 [tool.setuptools.packages.find]
 include = ["dmqtl*"]

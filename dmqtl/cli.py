@@ -76,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
     run = p.add_argument_group("Run")
     run.add_argument("--n-workers", type=int, default=1, help="Number of parallel processes for the score-test + permutation stage")
     run.add_argument("--seed", type=int, default=0)
+    run.add_argument("--perm-engine", choices=["fast", "loop"], default="fast",
+                     help="Permutation implementation; 'loop' is the v1.0.0 reference path (same results, slower)")
+    drm.add_argument("--null-fit-parallel-chunks", type=int, default=1,
+                     help="Null-fit chunks run at the same time (each is one Rscript using --null-fit-n-cores)")
 
     return p
 
@@ -114,8 +118,26 @@ def main(argv: list[str] | None = None) -> int:
         n_workers=args.n_workers,
         seed=args.seed,
         celltype=args.celltype,
+        perm_engine=args.perm_engine,
+        null_fit_parallel_chunks=args.null_fit_parallel_chunks,
     )
     print(summary, file=sys.stderr)
+    return 0
+
+
+def convert_main(argv: list[str] | None = None) -> int:
+    """``dmqtl-convert-genotype``: parse a genotype text matrix once into a binary store.
+
+    Pass the printed prefix to ``dmqtl-run --genotype``.
+    """
+    p = argparse.ArgumentParser(prog="dmqtl-convert-genotype",
+                                description="Convert a genotype text matrix into a memory-mapped binary store.")
+    p.add_argument("genotype_txt")
+    p.add_argument("out_prefix")
+    p.add_argument("--chunk-rows", type=int, default=20000)
+    args = p.parse_args(argv)
+    from .genostore import convert_genotype_text
+    print(convert_genotype_text(args.genotype_txt, args.out_prefix, chunk_rows=args.chunk_rows))
     return 0
 
 
