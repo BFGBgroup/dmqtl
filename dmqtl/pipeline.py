@@ -70,7 +70,7 @@ import numpy as np
 
 from .genostore import materialize_genotype
 from .nullmodel import NullFit
-from .pvalue import adaptive_permutation, beta_approx_pvalue
+from .pvalue import adaptive_permutation, beta_approx_pvalue, floor_warning
 from .scoretest import GeneNullContext, PermScanner
 
 
@@ -434,15 +434,11 @@ def run_one_gene(gene_id: str, celltype: str, y: np.ndarray, X: np.ndarray,
                                      min_perm=min_perm,
                                      max_perm=max_perm,
                                      min_hits_to_stop=min_hits_to_stop)
-    floor_share = float(np.mean(perm_res.perm_min_p <= 1e-12))
-    if floor_share > 0.01 and obs_min_p > 1e-12:
-        # Under a well-calibrated null this share is ~0. Seen on real data (2026-10) together with a
-        # failing Beta fit: the score test is far from its chi-square null for this gene. A gene with a
-        # strong true effect can also reach the floor under permutation (its null fit absorbs nothing of
-        # the effect), but then the observed min-p is below the floor as well, so it is not reported.
-        print(f"[dmqtl] WARNING: gene {gene_id}: {floor_share:.0%} of permutation min-p values are <= 1e-12 "
-              f"(observed min-p {obs_min_p:.3g}); its Beta-approximated p-value needs care", file=sys.stderr)
     p_beta, a, b = beta_approx_pvalue(perm_res)
+    msg = floor_warning(perm_res, p_beta)
+    if msg:
+        print(f"[dmqtl] WARNING: gene {gene_id}: {msg}; the Beta-approximated p-value is unreliable for this gene",
+              file=sys.stderr)
 
     return GeneResult(gene_id=gene_id, celltype=celltype, n_snp=n_snp,
                        lead_snp_index=lead_idx, obs_min_p=obs_min_p,

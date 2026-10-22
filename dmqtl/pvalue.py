@@ -158,6 +158,25 @@ def beta_approx_pvalue(result: AdaptivePermResult) -> tuple[float, float, float]
     return p_beta, float(a), float(b)
 
 
+def floor_warning(result: AdaptivePermResult, p_beta: float) -> str | None:
+    """Message when more than 1% of the permutation min-p values are <= 1e-12, else None.
+
+    Under a well-calibrated null this share is ~0. On real data (2026-10) it
+    came from a single outlying individual being the only informative carrier
+    of rare SNPs: the score test is far from its chi-square null, and the Beta
+    fit, pulled towards 0 by the floor values, gives too small a p-value
+    (ADAMTS18: 63% at the floor, Beta p 0.032, empirical p 0.37). The observed
+    min-p can be below the floor as well (2.1e-25 there), so it is not used to
+    skip genes. The empirical p-value is reported next to the Beta one.
+    """
+    share = float(np.mean(result.perm_min_p <= 1e-12))
+    if share <= 0.01:
+        return None
+    p_emp = (result.n_hits + 1) / (result.n_perm_used + 1)
+    return (f"{share:.0%} of permutation min-p values are <= 1e-12 (observed min-p {result.obs_min_p:.3g}); "
+            f"Beta p {p_beta:.3g} vs empirical p {p_emp:.3g} from {result.n_perm_used} permutations")
+
+
 def storey_qvalue(pvals: np.ndarray, lambdas: np.ndarray | None = None) -> np.ndarray:
     """Simplified Storey q-value calculation.
 
