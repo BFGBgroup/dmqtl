@@ -46,9 +46,10 @@ def test_scanner_matches_loop_for_each_km1():
         ctx = GeneNullContext(y, X, eta, phi)
         perms = np.array([rng.permutation(80) for _ in range(25)])
         loop = permute_min_p(ctx, G, perms, method="loop")
-        # tiny block budget forces several blocks, exercising the chunking
-        fast = PermScanner(ctx, G, max_block_bytes=200_000).min_pvalues(perms)
-        np.testing.assert_allclose(fast, loop, rtol=1e-9, atol=0, err_msg=f"K={K}")
+        for fold in (True, False):
+            # tiny block budget forces several blocks, exercising the chunking
+            fast = PermScanner(ctx, G, max_block_bytes=200_000, fold_ibb=fold).min_pvalues(perms)
+            np.testing.assert_allclose(fast, loop, rtol=1e-9, atol=0, err_msg=f"K={K} fold_ibb={fold}")
 
 
 def test_scanner_observed_order_matches_score_pvalues():

@@ -384,10 +384,11 @@ class PermScanner:
        matrix is well conditioned (`_quad_form`), and chi2.sf is evaluated
        only at each permutation's largest valid statistic, which gives the
        same minimum p-value because sf is monotone.
+    5. Ibb^-1 is factored once per gene and folded into X(x)W (`fold_ibb`).
     """
 
     def __init__(self, ctx: GeneNullContext, G: np.ndarray, max_block_bytes: int = 256 * 2**20,
-                 dedup: bool = True):
+                 dedup: bool = True, fold_ibb: bool = True):
         self.ctx = ctx
         n, km1, p = ctx.n, ctx.km1, ctx.p
         if dedup:
@@ -397,6 +398,15 @@ class PermScanner:
         self.Wf = ctx.W.reshape(n, km1 * km1)
         # columns ordered (j, b, k) to match the "mjbk" layout of score_test_batch
         self.XW = np.einsum("ib,ijk->ijbk", ctx.X, ctx.W).reshape(n, km1 * p * km1)
+        # fold_ibb: write Ibb^-1 = L L^T once per gene and fold L into X(x)W, so
+        # the matrix product gives Z = Idb L directly and the Schur correction is
+        # Z Z^T. This drops the per-permutation (Idb @ Ibb^-1) product (a third
+        # of the time for K >= 3) and changes the result only by rounding.
+        self.fold_ibb = fold_ibb
+        if fold_ibb:
+            w, V = np.linalg.eigh(0.5 * (ctx.Ibb_inv + ctx.Ibb_inv.T))
+            L = V * np.sqrt(np.clip(w, 0.0, None))
+            self.XWL = (self.XW.reshape(n, km1, p * km1) @ L).reshape(n, km1 * p * km1)
         m = self.G.shape[1]
         q = km1 * p * km1
         per_perm = 8 * (m * (km1 + 3 * km1 * km1 + 2 * q) + n * (km1 + km1 * km1 + q))
@@ -417,8 +427,12 @@ class PermScanner:
 
             U = (self.G.T @ stacked(ctx.R)).reshape(m, B, km1)
             Idd = (self.G2.T @ stacked(self.Wf)).reshape(m, B, km1, km1)
-            Idb = (self.G.T @ stacked(self.XW)).reshape(m, B, km1, p * km1)
-            Schur = Idd - (Idb @ ctx.Ibb_inv) @ np.swapaxes(Idb, -1, -2)
+            if self.fold_ibb:
+                Z = (self.G.T @ stacked(self.XWL)).reshape(m, B, km1, p * km1)
+                Schur = Idd - Z @ np.swapaxes(Z, -1, -2)
+            else:
+                Idb = (self.G.T @ stacked(self.XW)).reshape(m, B, km1, p * km1)
+                Schur = Idd - (Idb @ ctx.Ibb_inv) @ np.swapaxes(Idb, -1, -2)
             out[s:s + B] = _quad_form(U, Schur).T
         return out
 
