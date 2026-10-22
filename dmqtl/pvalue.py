@@ -21,8 +21,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import warnings
+
 import numpy as np
-from scipy import stats
+from scipy import optimize, stats
 
 
 @dataclass
@@ -91,6 +93,32 @@ def adaptive_permutation(perm_min_p_fn, obs_min_p: float,
                                n_hits=n_hits, perm_min_p=perm_min_p)
 
 
+def _beta_mle_nelder_mead(x: np.ndarray) -> tuple[float, float] | None:
+    """Beta(a, b) MLE on (0, 1) by Nelder-Mead in log-parameter space, started from the moments.
+
+    Returns None when the moments give no valid start (no spread) or the optimum is not finite.
+    """
+    if x.max() <= x.min():  # no spread (rounding can still give a tiny positive variance)
+        return None
+    m, v = float(x.mean()), float(x.var())
+    if not (0 < m < 1) or v <= 0 or m * (1 - m) <= v:
+        return None
+    a0 = m * (m * (1 - m) / v - 1)
+    b0 = a0 * (1 / m - 1)
+
+    def nll(t):
+        return -float(stats.beta.logpdf(x, np.exp(t[0]), np.exp(t[1])).sum())
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        r = optimize.minimize(nll, np.log([a0, b0]), method="Nelder-Mead",
+                              options=dict(xatol=1e-8, fatol=1e-10, maxiter=20000, maxfev=40000))
+    a, b = (float(v) for v in np.exp(r.x))
+    if not (np.isfinite(r.fun) and np.isfinite(a) and np.isfinite(b)):
+        return None
+    return a, b
+
+
 def beta_approx_pvalue(result: AdaptivePermResult) -> tuple[float, float, float]:
     """Fit a Beta(a, b) distribution to the permuted min-p null distribution
     and return `(p_beta, a, b)`.
@@ -107,7 +135,19 @@ def beta_approx_pvalue(result: AdaptivePermResult) -> tuple[float, float, float]
     is needed.
     """
     x = np.clip(result.perm_min_p, 1e-12, 1 - 1e-12)
-    a, b, _, _ = stats.beta.fit(x, floc=0, fscale=1)
+    try:
+        a, b, _, _ = stats.beta.fit(x, floc=0, fscale=1)
+    except Exception:  # noqa: BLE001 - scipy raises FitSolverError and others
+        # 2026-10, real data: scipy's MLE solver did not converge for a gene
+        # whose permutation min-p sat at the 1e-12 floor in half of the
+        # permutations, and the uncaught error ended the whole run. Maximise the
+        # same log-likelihood with Nelder-Mead from the method-of-moments start
+        # (as tensorQTL does); if no finite fit exists, use the empirical
+        # permutation p-value. Genes scipy can fit keep scipy's numbers.
+        ab = _beta_mle_nelder_mead(x)
+        if ab is None:
+            return (result.n_hits + 1) / (result.n_perm_used + 1), float("nan"), float("nan")
+        a, b = ab
     # Smaller min(P) values are more significant, so the desired quantity is
     # the CDF: the probability that a permuted min-p value is <= the observed
     # value. It is not the survival function. The previous implementation
