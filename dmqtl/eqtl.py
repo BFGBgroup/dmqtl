@@ -28,6 +28,7 @@ from pathlib import Path
 import numpy as np
 
 from .cis import build_cis_map, center_columns, impute_genotype_mean, maf_filter
+from .genostore import is_store, materialize_genotype, open_store, raw_gene_genotype
 from .io import (
     match_individuals,
     read_gene_positions,
@@ -92,14 +93,32 @@ def build_gene_tasks(genotype_path, phenotype_path, pas_gene_map_path, covariate
       least two categories) or if it has no candidate cis-SNPs. Skipped genes
       are recorded in `MatchedInfo.skipped_genes` and do not cause the
       entire workflow to fail.
+
+    Genotype input (2026-10):
+        `genotype_path` may also be the prefix of a binary store written by
+        `genostore.convert_genotype_text`. The genome-wide matrix is then
+        memory-mapped instead of parsed into RAM, and tasks carry the gene's
+        candidate row indices (`task["geno"]`) instead of a G matrix; the
+        worker rebuilds G with `genostore.materialize_genotype` just before
+        scanning the gene. Which genes are skipped, the variant lists and G
+        itself are identical to the text path (tests/test_genostore.py).
     """
-    geno = read_matrix_text(genotype_path)
+    store = open_store(genotype_path) if is_store(genotype_path) else None
+    if store is None:
+        geno = read_matrix_text(genotype_path)
+        geno_sample_ids, geno_row_ids = geno.sample_ids, geno.row_ids
+    else:
+        geno_sample_ids, geno_row_ids = store.sample_ids, store.row_ids
     pheno = read_matrix_text(phenotype_path)
     covar = read_matrix_text(covariates_path)
     gene_to_pas = read_pas_gene_map(pas_gene_map_path)
 
-    matched = match_individuals(geno.sample_ids, pheno.sample_ids, covar.sample_ids)
-    geno = reindex_matrix(geno, matched.sample_ids)
+    matched = match_individuals(geno_sample_ids, pheno.sample_ids, covar.sample_ids)
+    if store is None:
+        geno = reindex_matrix(geno, matched.sample_ids)
+    else:
+        sample_pos = {s: i for i, s in enumerate(store.sample_ids)}
+        col_idx = np.array([sample_pos[s] for s in matched.sample_ids], dtype=np.intp)
     pheno = reindex_matrix(pheno, matched.sample_ids)
     covar = reindex_matrix(covar, matched.sample_ids)
     n = len(matched.sample_ids)
@@ -124,7 +143,7 @@ def build_gene_tasks(genotype_path, phenotype_path, pas_gene_map_path, covariate
             "a pre-filtered cis-region dataset).",
               file=sys.stderr)
 
-    geno_row_index = {vid: i for i, vid in enumerate(geno.row_ids)}
+    geno_row_index = {vid: i for i, vid in enumerate(geno_row_ids)}
 
     tasks = []
     skipped = []
@@ -142,17 +161,28 @@ def build_gene_tasks(genotype_path, phenotype_path, pas_gene_map_path, covariate
         if cis_map is not None:
             candidate_vids = [v for v in cis_map.get(gene_id, []) if v in geno_row_index]
         else:
-            candidate_vids = geno.row_ids
+            candidate_vids = geno_row_ids
         if len(candidate_vids) == 0:
             skipped.append((gene_id, "no candidate cis-SNPs"))
             continue
         rows = [geno_row_index[v] for v in candidate_vids]
-        G_raw = geno.values[rows, :].T  # (n, n_snp)
+        if store is None:
+            G_raw = geno.values[rows, :].T  # (n, n_snp)
+        else:
+            rows = np.array(rows, dtype=np.int32 if len(geno_row_ids) < 2**31 else np.int64)
+            G_raw = raw_gene_genotype(store, rows, col_idx)
 
         G_imputed = impute_genotype_mean(G_raw)
         kept_vids, G_kept = maf_filter(candidate_vids, G_imputed, maf_threshold=maf_threshold)
         if len(kept_vids) == 0:
             skipped.append((gene_id, f"no candidate SNPs remain after MAF >= {maf_threshold} filtering"))
+            continue
+        if store is not None:
+            # keep only what is needed to rebuild G later; the matrices are dropped here
+            del G_raw, G_imputed, G_kept
+            tasks.append(dict(gene_id=gene_id, celltype=celltype, y=y, X=X, variant_ids=kept_vids,
+                              geno=dict(prefix=store.prefix, rows=rows, col_idx=col_idx,
+                                        maf_threshold=maf_threshold)))
             continue
         G_centered = center_columns(G_kept)
 

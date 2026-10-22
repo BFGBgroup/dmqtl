@@ -67,6 +67,7 @@ from typing import Callable, Sequence
 
 import numpy as np
 
+from .genostore import materialize_genotype
 from .nullmodel import NullFit
 from .pvalue import adaptive_permutation, beta_approx_pvalue
 from .scoretest import GeneNullContext, PermScanner
@@ -461,7 +462,10 @@ def _run_one_gene_worker(args):
         # the worker process to fail.
         return None
     rng = np.random.default_rng(seed + i)
+    # Lazy tasks (genotype store input) carry row indices instead of G; the
+    # matrix exists only while this gene is being scanned.
+    G = task["G"] if "G" in task else materialize_genotype(task)
     return run_one_gene(task["gene_id"], task["celltype"], task["y"],
-                         task["X"], task["G"], rng,
+                         task["X"], G, rng,
                          null_fit_fn=null_fit_fn, null_fit=null_fit,
                          variant_ids=task.get("variant_ids"), **kwargs)
