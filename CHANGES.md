@@ -23,6 +23,14 @@ not reproduce v1.0.0's results are listed separately below, with the reason.
   memory (`tests/test_genostore.py`: values, tasks and output files identical).
 - **Null-fit chunks in parallel** (`--null-fit-parallel-chunks N`, each chunk
   one Rscript with `--null-fit-n-cores` cores).
+- **Worker pool: one gene per dispatch, heaviest gene first.** v1.0.0 hands
+  each worker ~n/(4×workers) consecutive genes at once, in genome order. Now
+  genes go one at a time, sorted by per-permutation cost, (K−1)^1.83 × SNP
+  count (fit on full Ast, R² 0.98), so no heavy gene starts near the end and
+  runs alone while the rest of the node waits. Replay of full Ast on 55
+  workers: ~2 h shorter permutation stage. Each gene keeps its task index as
+  its RNG seed and results return to task order, so the output files are
+  identical to serial processing (`tests/test_dispatch.py`).
 
 Real data (Ast pseudobulk, 100 genes, 432 individuals, 609,505 cis pairs, the
 same DRIMSeq null fits on both sides, 16 workers, 1,000 permutations, the same

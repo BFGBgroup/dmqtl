@@ -524,11 +524,34 @@ def run_many_genes(tasks: list[dict], null_fit_fn: NullFitFn | None = None,
         results = [_run_one_gene_worker(item) for item in indexed]
     else:
         import multiprocessing as mp
+        # Heaviest gene first, so no heavy gene starts near the end of the run and keeps one worker busy
+        # after the others have finished. Each gene keeps its task index (and so its RNG seed), and the
+        # results go back into task order: output is the same as with serial processing.
+        order = _dispatch_order(tasks)
         with mp.Pool(n_workers) as pool:
             # One gene per dispatch: per-gene cost spans orders of magnitude (K, SNP count, permutations
             # used), and default chunks of ~n/(4*workers) genes leave most workers idle behind a heavy chunk.
-            results = pool.map(_run_one_gene_worker, indexed, chunksize=1)
+            done = pool.map(_run_one_gene_worker, [indexed[i] for i in order], chunksize=1)
+        results = [None] * len(indexed)
+        for i, r in zip(order, done):
+            results[i] = r
     return [r for r in results if r is not None]
+
+
+def _gene_cost(task: dict) -> float:
+    """Relative cost of one permutation of a gene: (K-1)^1.83 * n_snp (x6 bench fit on full Ast,
+    R^2 0.98). Tasks without y or SNPs cost 0."""
+    K = task["y"].shape[1] if "y" in task else 1
+    if "G" in task:
+        n_snp = task["G"].shape[1]
+    else:
+        n_snp = len(task.get("variant_ids") or ())
+    return max(K - 1, 0) ** 1.83 * n_snp
+
+
+def _dispatch_order(tasks: list[dict]) -> list[int]:
+    """Task indices, most expensive gene first; equal costs keep task order."""
+    return sorted(range(len(tasks)), key=lambda i: -_gene_cost(tasks[i]))
 
 
 def _run_one_gene_worker(args):
