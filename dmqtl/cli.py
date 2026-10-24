@@ -51,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     opt.add_argument("--gene-pos", default=None, help="Gene position file (used together with --snp-pos)")
     opt.add_argument("--cis-window", type=int, default=1_000_000, help="Distance from the TSS in bp (default: 1e6)")
     opt.add_argument("--maf-threshold", type=float, default=0.01)
+    opt.add_argument("--min-mac", type=int, default=0,
+                     help="Test a cis-SNP only if its minor allele occurs at least this many times among the "
+                          "individuals with reads for the gene (default 0 = off, as in v1.0.0). Genes left "
+                          "without SNPs are not tested; the null fit and its cache are unchanged")
     opt.add_argument("--celltype", default="celltype", help="Group/cell-type label written to the output files")
 
     drm = p.add_argument_group("DRIMSeq / null model")
@@ -131,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         null_fit_optim_maxit=args.null_fit_optim_maxit,
         null_fit_seed=args.null_fit_seed,
         null_fit_cr_logdet=bool(args.null_fit_cr_logdet),
+        min_mac=args.min_mac,
     )
     print(summary, file=sys.stderr)
     return 0

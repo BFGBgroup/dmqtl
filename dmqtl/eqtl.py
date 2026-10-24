@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .cis import build_cis_map, center_columns, impute_genotype_mean, maf_filter
+from .cis import build_cis_map, center_columns, impute_genotype_mean, mac_among_readers, maf_keep_mask
 from .genostore import is_store, materialize_genotype, open_store, raw_gene_genotype
 from .io import (
     match_individuals,
@@ -56,7 +56,7 @@ class RunSummary:
 def build_gene_tasks(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
                       snp_pos_path=None, gene_pos_path=None, cis_window: int = 1_000_000,
                       maf_threshold: float = 0.01, min_pas_per_gene: int = 2,
-                      celltype: str = "celltype") -> tuple[list[dict], MatchedInfo]:
+                      celltype: str = "celltype", min_mac: int = 0) -> tuple[list[dict], MatchedInfo]:
     """Read all text inputs, match individual IDs, and construct one task
     per gene containing `(y, X, G, variant_ids)`.
 
@@ -94,6 +94,13 @@ def build_gene_tasks(genotype_path, phenotype_path, pas_gene_map_path, covariate
       least two categories) or if it has no candidate cis-SNPs. Skipped genes
       are recorded in `MatchedInfo.skipped_genes` and do not cause the
       entire workflow to fail.
+
+    - `min_mac` (2026-10, default 0 = off): after the MAF filter, keep only
+      SNPs whose minor allele occurs at least `min_mac` times among the
+      individuals with reads for the gene (`cis.mac_among_readers`). A gene
+      left without SNPs keeps its task with an empty variant list, so the
+      null-fit chunks (and their cache) and every gene's seed are the same as
+      without the filter; `run_many_genes` does not test it.
 
     Genotype input (2026-10):
         `genotype_path` may also be the prefix of a binary store written by
@@ -174,16 +181,23 @@ def build_gene_tasks(genotype_path, phenotype_path, pas_gene_map_path, covariate
             G_raw = raw_gene_genotype(store, rows, col_idx)
 
         G_imputed = impute_genotype_mean(G_raw)
-        kept_vids, G_kept = maf_filter(candidate_vids, G_imputed, maf_threshold=maf_threshold)
-        if len(kept_vids) == 0:
+        keep = maf_keep_mask(G_imputed, maf_threshold)
+        if not keep.any():
             skipped.append((gene_id, f"no candidate SNPs remain after MAF >= {maf_threshold} filtering"))
             continue
+        if min_mac > 0:
+            keep[keep] = mac_among_readers(G_raw[:, keep], y) >= min_mac
+            if not keep.any():
+                print(f"[dmqtl] Gene {gene_id}: no SNP has MAC >= {min_mac} among individuals with reads; "
+                      "kept for the null fit, not tested", file=sys.stderr)
+        kept_vids = [v for v, k in zip(candidate_vids, keep) if k]
+        G_kept = G_imputed[:, keep]
         if store is not None:
             # keep only what is needed to rebuild G later; the matrices are dropped here
             del G_raw, G_imputed, G_kept
             tasks.append(dict(gene_id=gene_id, celltype=celltype, y=y, X=X, variant_ids=kept_vids,
                               geno=dict(prefix=store.prefix, rows=rows, col_idx=col_idx,
-                                        maf_threshold=maf_threshold)))
+                                        maf_threshold=maf_threshold, min_mac=min_mac)))
             continue
         G_centered = center_columns(G_kept)
 
@@ -282,7 +296,8 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
               perm_engine: str = "fast", null_fit_parallel_chunks: int = 1,
               null_fit_optim_maxit: int | None = 1000,
               null_fit_seed: int | None = None,
-              null_fit_cr_logdet: bool = True) -> RunSummary:
+              null_fit_cr_logdet: bool = True,
+              min_mac: int = 0) -> RunSummary:
     """Run the complete dmqtl workflow.
 
     Workflow:
@@ -479,6 +494,14 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
         `null_fit_cr_logdet=False, null_fit_optim_maxit=None` reproduces
         v1.0.0 / DRIMSeq as shipped.
 
+    min_mac (2026-10, default 0 = off):
+        Test a cis-SNP only if its minor allele occurs at least this many
+        times among the individuals with reads for the gene; see
+        `build_gene_tasks`. eGenes and significant pairs are called exactly
+        as before on the remaining SNPs. Genes left without SNPs are not
+        tested; the null fit is unchanged, so an existing null-fit cache
+        stays valid.
+
     Example:
         from dmqtl.eqtl import run_dmqtl
 
@@ -504,7 +527,7 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
     tasks, info = build_gene_tasks(
         genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
         snp_pos_path=snp_pos_path, gene_pos_path=gene_pos_path,
-        cis_window=cis_window, maf_threshold=maf_threshold, celltype=celltype,
+        cis_window=cis_window, maf_threshold=maf_threshold, celltype=celltype, min_mac=min_mac,
     )
     for pool_name, extra in info.dropped.items():
         print(f"[dmqtl] WARNING: {len(extra)} individual IDs in {pool_name} were not found in the intersection and were dropped "
@@ -515,6 +538,11 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
     print(f"[dmqtl] {len(info.matched_sample_ids)} individuals; "
           f"{len(tasks)}/{info.n_genes_total} genes entered the analysis "
           f"({len(info.skipped_genes)} skipped)", file=sys.stderr)
+    if min_mac > 0:
+        n_empty = sum(1 for t in tasks if len(t["variant_ids"]) == 0)
+        n_snp = sum(len(t["variant_ids"]) for t in tasks)
+        print(f"[dmqtl] MAC >= {min_mac} among individuals with reads: {n_snp} cis-SNPs kept; "
+              f"{n_empty} genes have none left and will not be tested", file=sys.stderr)
 
     use_batched_drimseq = False
     if null_fit_fn is None:

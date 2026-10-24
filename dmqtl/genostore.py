@@ -31,7 +31,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .cis import center_columns, compute_maf, impute_genotype_mean
+from .cis import center_columns, compute_maf, impute_genotype_mean, mac_among_readers
 from .io import _sniff_delimiter
 
 FORMAT = "dmqtl-genotype-store-v1"
@@ -169,18 +169,22 @@ def materialize_genotype(task: dict) -> np.ndarray:
     """Build a lazy task's centered genotype matrix G (n, n_snp) on demand.
 
     Repeats exactly the steps `build_gene_tasks` applies on the text path
-    (mean imputation -> MAF filter -> column centering) on the gene's
+    (mean imputation -> MAF filter -> MAC filter if min_mac > 0 -> column centering) on the gene's
     candidate rows, so G equals the eager task's G bit for bit. Called by the
     worker right before the gene is scanned; G is dropped afterwards.
     """
     spec = task["geno"]
     st = open_store(spec["prefix"])
-    G_imputed = impute_genotype_mean(raw_gene_genotype(st, spec["rows"], spec["col_idx"]))
+    G_raw = raw_gene_genotype(st, spec["rows"], spec["col_idx"])
+    G_imputed = impute_genotype_mean(G_raw)
     maf = compute_maf(G_imputed)
     keep = np.isfinite(maf) & (maf >= spec["maf_threshold"])
+    min_mac = spec.get("min_mac", 0)
+    if min_mac > 0:
+        keep[keep] = mac_among_readers(G_raw[:, keep], task["y"]) >= min_mac
     G = center_columns(G_imputed[:, keep])
     if G.shape[1] != len(task["variant_ids"]):
         raise RuntimeError(
-            f"gene {task['gene_id']}: {G.shape[1]} SNPs pass MAF now, {len(task['variant_ids'])} "
+            f"gene {task['gene_id']}: {G.shape[1]} SNPs pass MAF / MAC now, {len(task['variant_ids'])} "
             "when the task was built; the genotype store changed underneath the run")
     return G

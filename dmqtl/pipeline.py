@@ -570,6 +570,11 @@ def _run_one_gene_worker(args):
         # Treat this as an untestable gene and skip it rather than allowing
         # the worker process to fail.
         return None
+    vids = task.get("variant_ids")
+    if vids is not None and len(vids) == 0:
+        # No SNP passed --min-mac: the gene stays in the task list only so that the null-fit chunks
+        # and the other genes' seeds do not move (see eqtl.build_gene_tasks); it is not tested.
+        return None
     rng = np.random.default_rng(seed + i)
     # Lazy tasks (genotype store input) carry row indices instead of G; the
     # matrix exists only while this gene is being scanned.
