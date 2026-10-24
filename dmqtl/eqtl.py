@@ -20,6 +20,7 @@ See the `run_dmqtl` docstring near the end of this file or
 from __future__ import annotations
 
 import functools
+import pickle
 import sys
 import time
 from dataclasses import dataclass
@@ -228,6 +229,38 @@ def write_significant_pairs(path, pairs):
         for pr in pairs:
             f.write(f"{pr.gene_id}\t{pr.variant_id}\t{pr.nominal_pvalue:.6g}\t"
                      f"{pr.gene_nominal_threshold:.6g}\n")
+
+
+def save_gene_results(path, gene_results: list[GeneResult]):
+    """Pickle the per-gene results as soon as the permutations finish, so that a failure in the q-value or
+    writing stage does not lose them (full Ast, 2026-10-24: 20 h lost that way). `dmqtl-finish` writes the
+    outputs from this file. A failed save only warns."""
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(gene_results, f, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception as e:  # noqa: BLE001
+        print(f"[dmqtl] WARNING: could not save {path}: {e}", file=sys.stderr)
+
+
+def write_outputs(gene_results: list[GeneResult], output_prefix, q_threshold: float = 0.05):
+    """q-values, eGenes and significant pairs, then the three output files. Returns (egene_ids, pairs)."""
+    if gene_results:
+        beta_p = np.array([r.beta_p for r in gene_results])
+        qvals = storey_qvalue(beta_p)
+    else:
+        qvals = np.array([])
+
+    egene_ids, qvals_check, pairs = significant_snp_gene_pairs(
+        gene_results, q_threshold=q_threshold)
+    assert np.array_equal(qvals, qvals_check) or len(qvals) == 0
+
+    out_prefix = Path(output_prefix)
+    out_prefix.parent.mkdir(parents=True, exist_ok=True)
+    write_egenes(f"{output_prefix}.egenes.txt", gene_results, qvals)
+    write_all_pairs(f"{output_prefix}.cis_qtl_pairs.txt", gene_results)
+    write_significant_pairs(f"{output_prefix}.significant_pairs.txt", pairs)
+    return egene_ids, pairs
 
 
 def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
@@ -548,21 +581,8 @@ def run_dmqtl(genotype_path, phenotype_path, pas_gene_map_path, covariates_path,
             min_hits_to_stop=min_hits_to_stop, perm_engine=perm_engine,
         )
 
-    if gene_results:
-        beta_p = np.array([r.beta_p for r in gene_results])
-        qvals = storey_qvalue(beta_p)
-    else:
-        qvals = np.array([])
-
-    egene_ids, qvals_check, pairs = significant_snp_gene_pairs(
-        gene_results, q_threshold=q_threshold)
-    assert np.array_equal(qvals, qvals_check) or len(qvals) == 0
-
-    out_prefix = Path(output_prefix)
-    out_prefix.parent.mkdir(parents=True, exist_ok=True)
-    write_egenes(f"{output_prefix}.egenes.txt", gene_results, qvals)
-    write_all_pairs(f"{output_prefix}.cis_qtl_pairs.txt", gene_results)
-    write_significant_pairs(f"{output_prefix}.significant_pairs.txt", pairs)
+    save_gene_results(f"{output_prefix}.gene_results.pkl", gene_results)
+    egene_ids, pairs = write_outputs(gene_results, output_prefix, q_threshold)
 
     elapsed = time.time() - t0
     summary = RunSummary(

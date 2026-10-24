@@ -152,5 +152,28 @@ def convert_main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def finish_main(argv: list[str] | None = None) -> int:
+    """``dmqtl-finish``: write the three output files from <prefix>.gene_results.pkl.
+
+    ``dmqtl-run`` saves that file as soon as the permutations finish; use this when a run stopped in the
+    q-value or writing stage. The files are the ones ``dmqtl-run`` would have written.
+    """
+    p = argparse.ArgumentParser(prog="dmqtl-finish",
+                                description="Write the dmqtl output files from a saved <prefix>.gene_results.pkl.")
+    p.add_argument("gene_results_pkl")
+    p.add_argument("output_prefix")
+    p.add_argument("--q-threshold", type=float, default=0.05)
+    args = p.parse_args(argv)
+    import pickle
+
+    from .eqtl import write_outputs
+    with open(args.gene_results_pkl, "rb") as f:
+        gene_results = pickle.load(f)
+    egene_ids, pairs = write_outputs(gene_results, args.output_prefix, args.q_threshold)
+    print(f"[dmqtl] {len(gene_results)} genes tested, {len(egene_ids)} eGenes, {len(pairs)} significant pairs",
+          file=sys.stderr)
+    return 0
+
+
 if __name__ == "__main__":
     sys.exit(main())

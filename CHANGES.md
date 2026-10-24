@@ -99,7 +99,18 @@ less of an issue than with the 10-gene chunks used in this test.
 - **Beta approximation.** When scipy's `beta.fit` fails (it did on real data:
   `FitSolverError`, maxfev 600), v1.0.0 ended the whole run. Now: Nelder–Mead
   on the same likelihood (as in tensorQTL), then the empirical p-value; never
-  NaN. Genes where scipy succeeds are unchanged.
+  NaN. Genes where scipy succeeds are unchanged. scipy can also return an
+  invalid fit without raising: on the full Ast run (scipy 1.15.3) 11 genes with
+  25–96% of their min-p values at the floor got b < 0, Beta p NaN, and one NaN
+  made every q-value NaN, so the run stopped at the q-value check after the
+  20 h permutation stage (v1.0.0 stops there too). A fit with a non-finite or
+  non-positive shape now counts as failed (`tests/test_beta_fallback.py`).
+- **Permutation results saved before the q-value stage.** `dmqtl-run` writes
+  `<prefix>.gene_results.pkl` as soon as the permutations finish;
+  `dmqtl-finish <prefix>.gene_results.pkl <prefix>` writes the three output
+  files from it, identical to the ones `dmqtl-run` writes
+  (`tests/test_finish.py`). A run that fails after the permutations no longer
+  loses them.
 - **Degenerate score tests.** Individuals with zero total count carry no
   information (R_i = W_i = 0). A SNP that is constant over the informative
   individuals then has U = 0 and a zero Schur complement, and T = U'S⁺U is 0/0;

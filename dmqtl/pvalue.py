@@ -137,6 +137,10 @@ def beta_approx_pvalue(result: AdaptivePermResult) -> tuple[float, float, float]
     x = np.clip(result.perm_min_p, 1e-12, 1 - 1e-12)
     try:
         a, b, _, _ = stats.beta.fit(x, floc=0, fscale=1)
+        if not (np.isfinite(a) and np.isfinite(b) and a > 0 and b > 0):
+            # 2026-10-24, full Ast (scipy 1.15.3): for 11 genes with 25-96% of the min-p values at the
+            # floor scipy returned b < 0 without raising; Beta p was nan, and one nan made every q-value nan.
+            raise ValueError(f"invalid Beta fit a={a}, b={b}")
     except Exception:  # noqa: BLE001 - scipy raises FitSolverError and others
         # 2026-10, real data: scipy's MLE solver did not converge for a gene
         # whose permutation min-p sat at the 1e-12 floor in half of the
