@@ -165,6 +165,11 @@ to get wrong:
    run at once with `--null-fit-parallel-chunks`. See
    [`CHANGES.md`](CHANGES.md) for what changed since v1.0.0 and how to
    reproduce it.
+5. `--min-mac N` (default 0 = off) tests a SNP for a gene only if its minor
+   allele is carried at least N times among the individuals with reads for
+   that gene. Rare SNPs carried by one or two individuals with reads make the
+   Beta approximation unreliable (the run warns about such genes); the full
+   Ast run used N = 10.
 
 Before committing to a full-cohort run, benchmark on a small gene
 subset with the real per-gene SNP count and sample size to get an

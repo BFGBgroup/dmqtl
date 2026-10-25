@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dmqtl"
-version = "1.0.0"
+version = "1.1.0"
 description = "Dirichlet-Multinomial GLM score test for composition/APA-QTL mapping (dmQTL)"
 readme = "README.md"
 requires-python = ">=3.9"

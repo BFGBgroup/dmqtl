@@ -1,10 +1,27 @@
 # Changes
 
-## Unreleased (branch `opt`, based on v1.0.0 = 57701af)
+## 1.1.0 (based on v1.0.0 = 57701af)
 
 Three goals: lower memory, shorter run time, more genes with a usable null fit.
 Every change was checked against v1.0.0 on the same inputs; changes that do
 not reproduce v1.0.0's results are listed separately below, with the reason.
+
+### Full Ast run with this version
+
+Ast pseudobulk, 432 individuals, 9.2 M variants, 13,793 genes, one node with
+56 cores (55 workers, 7 null-fit chunks of 1,000 genes at a time),
+`--min-mac 10`:
+
+| | |
+|---|---|
+| genes with cis-SNPs / with a usable null fit / tested | 13,126 / 12,744 / 12,744 |
+| eGenes (q ≤ 0.05) / significant cis pairs | 810 / 80,008 |
+| null fit | 3.65 h (first run; reread from `--null-fit-cache-dir` in 15 s) |
+| permutation stage | 13.9 h |
+| real memory of the whole run, peak (anonymous PSS) | 142.5 GB |
+
+The three eGenes of the 100-gene test below are eGenes here as well, with the
+same lead SNPs, and all of its 558 significant pairs are significant again.
 
 ### Same results, less memory and time
 
@@ -130,10 +147,28 @@ less of an issue than with the 10-gene chunks used in this test.
   outlying individual is the only informative carrier of a rare SNP; 9 of 84
   tested genes, e.g. ADAMTS18 with 63% at the floor, Beta p 0.032 and
   empirical p 0.37 (its observed min-p, 2.1e-25, is below the floor too). The
-  p-values themselves are not changed here; a MAC threshold or the empirical
-  p-value for such genes are options.
+  p-values themselves are not changed here; see `--min-mac` below.
+
+### New option: minor allele count among individuals with reads
+
+- `--min-mac N` (default 0 = off, as in v1.0.0). After the MAF filter, a SNP
+  is tested for a gene only if its minor allele is carried at least N times
+  among the individuals with reads for that gene (missing genotypes not
+  counted). The MAF filter counts all individuals, so it keeps SNPs whose
+  carriers mostly have no reads, and these drive the floor warnings above.
+  Genes left without SNPs keep their place in the null-fit chunks (same chunks,
+  same cache, same per-gene seeds) and are not tested. The test statistic,
+  permutations and the eGene / eSNP rules are unchanged
+  (`tests/test_mac_filter.py`).
+- Real data, Ast: N = 10 removes 6.1% of the cis-SNPs of 300 random genes
+  (median 3.0% per gene). On the full run, genes with a floor warning
+  1,478 → 876 (none new), genes where Beta p < 0.05 but empirical p ≥ 0.05
+  78 → 39. The 12 genes left without SNPs had no usable null fit anyway.
+  Some genes keep a floor warning that the threshold does not remove (their
+  lead SNPs are not rare); their empirical p is in the warning.
 
 ### Reproducing v1.0.0
 
 `--perm-engine loop --null-fit-cr-logdet 0 --null-fit-optim-maxit 0`
-reproduces v1.0.0 apart from the two bug fixes above.
+(and `--min-mac 0`, the default) reproduces v1.0.0 apart from the bug fixes
+above.

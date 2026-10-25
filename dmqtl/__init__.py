@@ -38,7 +38,7 @@ from .nullmodel import (
 )
 from .pipeline import GeneResult, fit_null_models_batched, run_many_genes, run_one_gene
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = [
     "__version__",
